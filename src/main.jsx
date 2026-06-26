@@ -74,6 +74,136 @@ async function fetchPlaylist(account) {
   return response.text()
 }
 
+
+function getChannelQuality(channel) {
+  const searchable = `${channel.nome || ''} ${channel.grupo || ''} ${channel.url || ''}`.toUpperCase()
+  if (/\b(4K|UHD|2160P)\b/.test(searchable)) return '4K'
+  if (/\b(FHD|FULL\s*HD|1080P)\b/.test(searchable)) return 'FHD'
+  if (/\b(HD|720P)\b/.test(searchable)) return 'HD'
+  return ''
+}
+
+function createChannelKey(channel) {
+  return `${channel.id || channel.nome}-${channel.url}`
+}
+
+function sortByName(items) {
+  return [...items].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }))
+}
+
+function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
+  const [selectedGroup, setSelectedGroup] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
+
+  const groups = useMemo(() => {
+    const groupMap = channels.reduce((accumulator, channel) => {
+      const groupName = channel.grupo || 'Sem categoria'
+      accumulator[groupName] = (accumulator[groupName] || 0) + 1
+      return accumulator
+    }, {})
+
+    return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
+  }, [channels])
+
+  const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup)
+    ? selectedGroup
+    : groups[0]?.name || ''
+
+  const filteredChannels = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase()
+    return channels.filter((channel) => {
+      const matchesGroup = !activeGroup || channel.grupo === activeGroup
+      const matchesSearch = !normalizedSearch || `${channel.nome} ${channel.grupo}`.toLowerCase().includes(normalizedSearch)
+      return matchesGroup && matchesSearch
+    })
+  }, [activeGroup, channels, searchTerm])
+
+  const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
+
+  if (!channels.length) {
+    return (
+      <main className="placeholder-wrap">
+        <section className="panel placeholder">
+          <div className="placeholder-icon">📺</div>
+          <p className="eyebrow">LIVE TV</p>
+          <h2>Nenhuma lista carregada</h2>
+          <p>Conecte sua conta na tela ACCOUNT para o MediaManager organizar os canais ao vivo da lista M3U.</p>
+        </section>
+      </main>
+    )
+  }
+
+  return (
+    <main className="live-layout" aria-label="Navegação de canais ao vivo">
+      <aside className="panel group-panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Categorias</p>
+            <h2>LIVE TV</h2>
+          </div>
+          <span className="category-total">{groups.length}</span>
+        </div>
+        <div className="group-list" role="list" aria-label="Categorias da lista M3U">
+          {groups.map((group) => (
+            <button
+              key={group.name}
+              type="button"
+              className={group.name === activeGroup ? 'active' : ''}
+              onClick={() => setSelectedGroup(group.name)}
+            >
+              <span>{group.name}</span>
+              <small>{group.count}</small>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <section className="panel channel-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">{activeGroup || 'Canais'}</p>
+            <h2>{activeGroupTotal} canais na categoria</h2>
+          </div>
+          <label className="search-label">
+            <span>Buscar canal</span>
+            <input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" />
+          </label>
+        </div>
+
+        <div className="channel-count-row">
+          <span>{filteredChannels.length} canais encontrados</span>
+          <span>{favorites.length} favoritos</span>
+        </div>
+
+        {filteredChannels.length > 0 ? (
+          <div className="channel-grid" aria-label={`Canais de ${activeGroup}`}>
+            {filteredChannels.map((channel) => {
+              const channelKey = createChannelKey(channel)
+              const quality = getChannelQuality(channel)
+              const isFavorite = favorites.includes(channelKey)
+
+              return (
+                <article className="channel-card" key={channelKey}>
+                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channelKey)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
+                    ★
+                  </button>
+                  <div className="channel-logo-wrap">
+                    {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
+                  </div>
+                  <strong title={channel.nome}>{channel.nome}</strong>
+                  {quality && <span className="quality-badge">{quality}</span>}
+                </article>
+              )
+            })}
+          </div>
+        ) : (
+          <p className="empty">Nenhum canal encontrado com a busca atual.</p>
+        )}
+      </section>
+    </main>
+  )
+}
+
 function Topbar({ screen, onNavigate }) {
   return (
     <header className="topbar">
@@ -172,6 +302,7 @@ function App() {
   const [account, setAccount] = useState(loadSavedAccount)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
+  const [favoriteChannels, setFavoriteChannels] = useState([])
   const mediaManager = useMediaManager()
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
@@ -199,7 +330,16 @@ function App() {
     localStorage.removeItem(STORAGE_KEY)
     setAccount(EMPTY_ACCOUNT)
     mediaManager.clearCatalog()
+    setFavoriteChannels([])
     setStatus({ type: 'success', message: 'Dados removidos deste navegador.' })
+  }
+
+  function toggleFavoriteChannel(channelKey) {
+    setFavoriteChannels((currentFavorites) => (
+      currentFavorites.includes(channelKey)
+        ? currentFavorites.filter((favoriteKey) => favoriteKey !== channelKey)
+        : [...currentFavorites, channelKey]
+    ))
   }
 
   const currentItem = navigationItems.find((item) => item.id === screen) || navigationItems[0]
@@ -219,6 +359,8 @@ function App() {
 
       {screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Lista atualizada com sucesso')} onClear={clearData} loading={loading} status={status} />
+      ) : screen === 'live' ? (
+        <LiveTvScreen channels={mediaManager.all} favorites={favoriteChannels} onToggleFavorite={toggleFavoriteChannel} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
