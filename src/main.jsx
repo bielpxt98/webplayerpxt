@@ -32,17 +32,19 @@ function isMaskedPassword(password = '') {
   return String(password).trim() === MASKED_PASSWORD
 }
 
-function getAccountCredentials(account, sessionCredentials = null) {
-  const password = isMaskedPassword(account.password)
-    ? sessionCredentials?.password || ''
-    : account.password
-
+function getAccountCredentials(account) {
   return {
     server: account.server,
     username: account.username,
-    password,
+    password: account.password,
     remember: account.remember,
   }
+}
+
+function getSessionCredentialsPlaybackError(sessionCredentials) {
+  if (!sessionCredentials?.password) return 'Senha real da sessão ausente. Conecte novamente para liberar o playback.'
+  if (isMaskedPassword(sessionCredentials.password) || String(sessionCredentials.password).includes('•')) return 'Senha mascarada detectada na sessão. Conecte novamente para liberar o playback.'
+  return ''
 }
 
 function buildXtreamLoginUrl({ server, username, password }) {
@@ -63,11 +65,19 @@ function maskSensitiveUrl(url, password) {
 }
 
 function hasCompleteSessionCredentials(credentials) {
-  return Boolean(credentials?.server && credentials?.username && credentials?.password && !isMaskedPassword(credentials.password))
+  return Boolean(credentials?.server && credentials?.username && credentials?.password && !isMaskedPassword(credentials.password) && !String(credentials.password).includes('•'))
 }
 
 function buildXtreamPlaybackUrl(sessionCredentials, path, streamId, extension) {
-  if (!hasCompleteSessionCredentials(sessionCredentials)) return ''
+  const playbackError = getSessionCredentialsPlaybackError(sessionCredentials)
+  const isMaskedPasswordUsed = Boolean(sessionCredentials?.password && (isMaskedPassword(sessionCredentials.password) || String(sessionCredentials.password).includes('•')))
+  console.info('[Playback credentials] raw password source: sessionCredentials')
+  console.info(`[Playback credentials] isMaskedPasswordUsed: ${isMaskedPasswordUsed}`)
+  console.info('[Playback credentials]', {
+    rawPasswordSource: 'sessionCredentials',
+    isMaskedPasswordUsed,
+  })
+  if (playbackError || !hasCompleteSessionCredentials(sessionCredentials)) return ''
 
   const normalizedServer = normalizeServer(sessionCredentials.server)
   const username = String(sessionCredentials.username || '').trim()
@@ -321,6 +331,8 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     ? selectedChannel
     : null
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
+  const playbackCredentialsError = getSessionCredentialsPlaybackError(sessionCredentials)
+  const isSessionPasswordMasked = Boolean(sessionCredentials?.password && (isMaskedPassword(sessionCredentials.password) || String(sessionCredentials.password).includes('•')))
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, playbackFormat) : ''
   const activeFallbackUrl = playbackFormat === 'm3u8' && activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
@@ -400,7 +412,10 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <span>Diagnóstico temporário LIVE TV</span>
               <code>username: {sessionCredentials?.username ? 'OK' : 'ausente'}</code>
               <code>password: {sessionCredentials?.password ? 'REAL (mascarada apenas na tela)' : 'ausente'}</code>
-              <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : 'selecione um canal para gerar a URL'}</code>
+              <code>raw password source: sessionCredentials</code>
+              <code>isMaskedPasswordUsed: {isSessionPasswordMasked ? 'true' : 'false'}</code>
+              {playbackCredentialsError && <code>erro: {playbackCredentialsError}</code>}
+              <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : playbackCredentialsError || 'selecione um canal para gerar a URL'}</code>
               <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
               <code>formato: /live/username/password/stream_id.{playbackFormat}</code>
               <code>URL: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
@@ -660,7 +675,7 @@ function Topbar({ screen, onNavigate }) {
 }
 
 function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onRefresh, onClear, loading, status }) {
-  const generatedUrl = useMemo(() => buildXtreamLoginUrl(getAccountCredentials(account, sessionCredentials)), [account, sessionCredentials])
+  const generatedUrl = useMemo(() => buildXtreamLoginUrl(getAccountCredentials(account)), [account])
 
   return (
     <main className="account-page">
@@ -687,12 +702,14 @@ function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onR
 
         <label className="remember-row"><input type="checkbox" checked={account.remember} onChange={(event) => setAccount({ ...account, remember: event.target.checked })} /><span>Lembrar login</span></label>
 
-        {generatedUrl && <p className="hint">URL gerada: <span>{maskSensitiveUrl(generatedUrl, getAccountCredentials(account, sessionCredentials).password)}</span></p>}
+        {generatedUrl && <p className="hint">URL gerada: <span>{maskSensitiveUrl(generatedUrl, getAccountCredentials(account).password)}</span></p>}
         {sessionCredentials?.password && (
           <div className="live-url-diagnostic" aria-live="polite">
             <span>Diagnóstico de credenciais</span>
             <code>username: OK</code>
             <code>password: REAL (mascarada apenas na tela)</code>
+            <code>raw password source: sessionCredentials</code>
+            <code>isMaskedPasswordUsed: false</code>
             <code>stream_url: construída usando a senha real</code>
           </div>
         )}
@@ -752,9 +769,12 @@ function App() {
   const mediaManager = useMediaManager()
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
-    const authCredentials = getAccountCredentials(account, sessionCredentials)
+    const formCredentials = getAccountCredentials(account)
+    const authCredentials = isMaskedPassword(formCredentials.password)
+      ? { ...formCredentials, password: sessionCredentials?.password || '' }
+      : formCredentials
 
-    if (!buildXtreamLoginUrl(authCredentials)) {
+    if (!buildXtreamLoginUrl(authCredentials) || getSessionCredentialsPlaybackError({ password: authCredentials.password })) {
       setStatus({ type: 'error', message: 'Preencha servidor, usuário e senha.' })
       return
     }
@@ -763,18 +783,19 @@ function App() {
     setStatus({ type: '', message: '' })
 
     try {
-      saveAccount(authCredentials)
       const responseData = await validateXtreamAccount(authCredentials)
+      const realPassword = authCredentials.password.trim()
+      saveAccount({ ...authCredentials, password: realPassword })
       const catalogPayload = getCatalogPayload(responseData)
       const loadedCatalog = mediaManager.loadXtreamCatalog(catalogPayload, {
         server: normalizeServer(authCredentials.server),
         username: authCredentials.username,
-        password: authCredentials.password,
+        password: realPassword,
       })
       setSessionCredentials({
         server: normalizeServer(authCredentials.server),
         username: authCredentials.username.trim(),
-        password: authCredentials.password.trim(),
+        password: realPassword,
       })
       setAccount({
         ...account,
