@@ -3,6 +3,7 @@
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .62; }
 .app-shell { position: relative; min-height: 100vh; overflow: hidden; padding: 28px clamp(16px, 4vw, 56px) 104px; background: radial-gradient(circle at 20% 10%, rgba(30, 156, 255, .35), transparent 32%), linear-gradient(140deg, #061632 0%, #082657 48%, #041027 100%); }
 .background-glow { position: fixed; inset: auto -10% -24% -10%; height: 55vh; pointer-events: none; background: repeating-radial-gradient(ellipse at center, rgba(51, 178, 255, .25) 0 2px, transparent 3px 28px); filter: blur(.2px); opacity: .75; transform: rotate(-5deg); }
 .background-glow::before { content: ''; position: absolute; inset: -20% 10% 20%; background: radial-gradient(ellipse, rgba(41, 193, 255, .34), transparent 62%); filter: blur(42px); }
@@ -32,6 +33,7 @@ input, textarea { width: 100%; border: 1px solid rgba(117, 217, 255, .24); borde
 textarea { min-height: 105px; resize: vertical; }
 .hint span { word-break: break-all; color: #e7f8ff; }
 .status { color: #8ff3ff; font-weight: 800; }
+.live-status { margin-top: -8px; }
 .live-layout { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 20px; max-width: 1280px; margin: 0 auto; }
 .group-panel, .channel-panel { margin: 0; max-width: none; }
 .compact { align-items: flex-start; justify-content: space-between; }
