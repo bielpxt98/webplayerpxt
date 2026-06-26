@@ -656,6 +656,56 @@ input:focus {
   color: #a9c6de;
 }
 
+.live-format-toggle {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 4px;
+  border: 1px solid rgba(117, 217, 255, .18);
+  border-radius: 999px;
+  background: rgba(2, 8, 20, .36);
+}
+
+.live-format-toggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 14px;
+  color: #a9c6de;
+  font-weight: 800;
+  text-transform: uppercase;
+  background: transparent;
+  cursor: pointer;
+}
+
+.live-format-toggle button.active {
+  color: #061632;
+  background: #75d9ff;
+}
+
+.live-url-diagnostic {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px dashed rgba(117, 217, 255, .34);
+  border-radius: 16px;
+  background: rgba(2, 8, 20, .32);
+}
+
+.live-url-diagnostic span {
+  color: #75d9ff;
+  font-size: .72rem;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.live-url-diagnostic code {
+  overflow-wrap: anywhere;
+  color: #d8ecff;
+  font-size: .78rem;
+}
+
 .channel-card.active {
   outline: 2px solid rgba(117, 217, 255, .8);
   outline-offset: 2px;

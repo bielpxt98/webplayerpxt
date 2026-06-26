@@ -149,6 +149,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
+  const [playbackFormat, setPlaybackFormat] = useState('m3u8')
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -177,6 +178,9 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
   const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
     ? selectedChannel
     : null
+  const activePlaybackUrl = activeChannel?.liveUrls?.[playbackFormat] || (playbackFormat === 'ts' ? activeChannel?.fallbackUrl : activeChannel?.url) || ''
+  const activeFallbackUrl = playbackFormat === 'm3u8' ? activeChannel?.liveUrls?.ts || activeChannel?.fallbackUrl || '' : ''
+  const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
 
   function selectChannel(channel) {
     console.info('[LIVE TV] Selected channel playback URL', {
@@ -184,6 +188,10 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
       streamId: channel.streamId || channel.id,
       primaryUrl: maskChannelUrl(channel.url),
       fallbackUrl: maskChannelUrl(channel.fallbackUrl),
+      availableFormats: {
+        m3u8: maskChannelUrl(channel.liveUrls?.m3u8 || channel.url),
+        ts: maskChannelUrl(channel.liveUrls?.ts || channel.fallbackUrl),
+      },
     })
     setSelectedChannel(channel)
   }
@@ -228,11 +236,30 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={activeChannel?.url || ''} fallbackUrl={activeChannel?.fallbackUrl || ''} title={activeChannel?.nome || 'Player LIVE TV'} />
+          <HlsPlayer url={activePlaybackUrl} fallbackUrl={activeFallbackUrl} title={activeChannel?.nome || 'Player LIVE TV'} />
           <div className="live-player-info">
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
             <p>{activeChannel ? 'Reproduzindo o canal selecionado.' : 'Clique em um canal abaixo para iniciar a reprodução.'}</p>
+            <div className="live-format-toggle" aria-label="Formato temporário de reprodução LIVE TV">
+              {['m3u8', 'ts'].map((format) => (
+                <button
+                  key={format}
+                  type="button"
+                  className={playbackFormat === format ? 'active' : ''}
+                  onClick={() => setPlaybackFormat(format)}
+                >
+                  {format}
+                </button>
+              ))}
+            </div>
+            <div className="live-url-diagnostic" aria-live="polite">
+              <span>Diagnóstico temporário LIVE TV</span>
+              <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
+              <code>formato: /live/username/password/stream_id.{playbackFormat}</code>
+              <code>URL: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              {playbackFormat === 'm3u8' && activeFallbackUrl && <code>fallback .ts: {maskChannelUrl(activeFallbackUrl)}</code>}
+            </div>
           </div>
         </div>
 

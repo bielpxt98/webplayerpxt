@@ -1,6 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 
+function maskDiagnosticUrl(url) {
+  if (!url) return ''
+
+  try {
+    const parsedUrl = new URL(url)
+    const parts = parsedUrl.pathname.split('/')
+    const liveIndex = parts.findIndex((part) => part.toLowerCase() === 'live')
+
+    if (liveIndex >= 0 && parts[liveIndex + 2]) {
+      parts[liveIndex + 2] = '••••••'
+      parsedUrl.pathname = parts.join('/')
+      return parsedUrl.toString()
+    }
+  } catch {
+    return url.replace(/(\/live\/[^/]+\/)([^/]+)(\/)/i, '$1••••••$3')
+  }
+
+  return url
+}
+
 function getErrorMessage(errorType) {
   if (errorType === Hls.ErrorTypes.NETWORK_ERROR) return 'Não foi possível carregar o canal. Verifique a URL ou tente outro canal.'
   if (errorType === Hls.ErrorTypes.MEDIA_ERROR) return 'O navegador não conseguiu reproduzir este canal.'
@@ -41,7 +61,10 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
     const tryFallback = () => {
       const canFallback = fallbackUrl && activeUrl !== fallbackUrl
       if (canFallback) {
-        console.warn('[LIVE TV] Primary .m3u8 failed; trying .ts fallback.')
+        console.warn('[LIVE TV] Primary playback URL failed; trying fallback URL.', {
+          failedUrl: maskDiagnosticUrl(activeUrl),
+          fallbackUrl: maskDiagnosticUrl(fallbackUrl),
+        })
         setActiveUrl(fallbackUrl)
         return true
       }
@@ -52,6 +75,14 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
     const handleError = () => {
       if (!isCurrent || tryFallback()) return
       setIsLoading(false)
+      console.error('[LIVE TV] Native video playback error', {
+        url: maskDiagnosticUrl(activeUrl),
+        fallbackUrl: maskDiagnosticUrl(fallbackUrl),
+        mediaError: video.error ? {
+          code: video.error.code,
+          message: video.error.message,
+        } : null,
+      })
       setError('Este canal não pôde ser reproduzido agora.')
     }
 
@@ -59,7 +90,9 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
     video.addEventListener('playing', handleCanPlay)
     video.addEventListener('error', handleError)
 
-    if (video.canPlayType('application/vnd.apple.mpegurl') || activeUrl === fallbackUrl) {
+    const isTransportStreamUrl = /\.ts(?:[?#].*)?$/i.test(activeUrl)
+
+    if (video.canPlayType('application/vnd.apple.mpegurl') || activeUrl === fallbackUrl || isTransportStreamUrl) {
       video.src = activeUrl
     } else if (Hls.isSupported()) {
       hls = new Hls()
@@ -69,6 +102,15 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
         if (isCurrent) setIsLoading(false)
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        console.error('[LIVE TV] HlsPlayer error detail', {
+          url: maskDiagnosticUrl(activeUrl),
+          fallbackUrl: maskDiagnosticUrl(fallbackUrl),
+          type: data?.type,
+          details: data?.details,
+          fatal: data?.fatal,
+          response: data?.response,
+          error: data?.error,
+        })
         if (!isCurrent || !data?.fatal) return
         if (tryFallback()) return
         setIsLoading(false)
