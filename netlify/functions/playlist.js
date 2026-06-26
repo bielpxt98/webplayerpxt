@@ -1,12 +1,14 @@
 const REQUEST_TIMEOUT_MS = 25000
 const ERROR_BODY_PREVIEW_LENGTH = 2000
 
-const XTREAM_DATA_ENDPOINTS = [
+const XTREAM_LOGIN_ENDPOINT = { key: 'account', action: '', label: 'login' }
+const XTREAM_LIVE_ENDPOINTS = [
   { key: 'liveCategories', action: 'get_live_categories', label: 'categorias LIVE' },
   { key: 'liveStreams', action: 'get_live_streams', label: 'canais LIVE' },
-  { key: 'vodStreams', action: 'get_vod_streams', label: 'filmes' },
-  { key: 'series', action: 'get_series', label: 'séries' },
 ]
+
+const LIVE_STREAM_FIELDS = ['stream_id', 'name', 'stream_icon', 'epg_channel_id', 'category_id', 'category_name']
+const LIVE_CATEGORY_FIELDS = ['category_id', 'category_name']
 
 function jsonResponse(statusCode, message, details = {}) {
   return {
@@ -53,6 +55,39 @@ function safeLogUrl(xtreamUrl) {
 async function readErrorPreview(response) {
   const text = await response.text()
   return text.slice(0, ERROR_BODY_PREVIEW_LENGTH)
+}
+
+function pickFields(source, fields) {
+  if (!source || typeof source !== 'object') return source
+  return fields.reduce((item, field) => {
+    if (source[field] !== undefined && source[field] !== null) item[field] = source[field]
+    return item
+  }, {})
+}
+
+function compactAccount(account) {
+  return {
+    user_info: account?.user_info
+      ? pickFields(account.user_info, ['auth', 'status', 'exp_date', 'is_trial', 'active_cons', 'max_connections'])
+      : undefined,
+    server_info: account?.server_info
+      ? pickFields(account.server_info, ['url', 'port', 'https_port', 'server_protocol', 'timezone'])
+      : undefined,
+  }
+}
+
+function compactLiveCatalog(catalog) {
+  return {
+    account: compactAccount(catalog.account),
+    liveCategories: Array.isArray(catalog.liveCategories)
+      ? catalog.liveCategories.map((category) => pickFields(category, LIVE_CATEGORY_FIELDS))
+      : [],
+    liveStreams: Array.isArray(catalog.liveStreams)
+      ? catalog.liveStreams.map((stream) => pickFields(stream, LIVE_STREAM_FIELDS))
+      : [],
+    vodStreams: [],
+    series: [],
+  }
 }
 
 async function fetchXtreamJson(credentials, endpoint, signal) {
@@ -125,22 +160,22 @@ exports.handler = async (event) => {
   const startedAt = Date.now()
 
   try {
-    const account = await fetchXtreamJson(credentials, { key: 'account', action: '', label: 'login' }, controller.signal)
+    const account = await fetchXtreamJson(credentials, XTREAM_LOGIN_ENDPOINT, controller.signal)
 
     if (account?.user_info && String(account.user_info.auth) === '0') {
       return jsonResponse(401, 'Login Xtream não autorizado. Verifique usuário e senha.', { status: 401 })
     }
 
     const entries = await Promise.all(
-      XTREAM_DATA_ENDPOINTS.map(async (endpoint) => [endpoint.key, await fetchXtreamJson(credentials, endpoint, controller.signal)]),
+      XTREAM_LIVE_ENDPOINTS.map(async (endpoint) => [endpoint.key, await fetchXtreamJson(credentials, endpoint, controller.signal)]),
     )
-    const catalog = { account, ...Object.fromEntries(entries) }
+    const catalog = compactLiveCatalog({ account, ...Object.fromEntries(entries) })
 
     console.log('[playlist] Dados da API Xtream recebidos com sucesso', {
       liveCategories: Array.isArray(catalog.liveCategories) ? catalog.liveCategories.length : 0,
       liveStreams: Array.isArray(catalog.liveStreams) ? catalog.liveStreams.length : 0,
-      vodStreams: Array.isArray(catalog.vodStreams) ? catalog.vodStreams.length : 0,
-      series: Array.isArray(catalog.series) ? catalog.series.length : 0,
+      vodStreams: 0,
+      series: 0,
       elapsedMs: Date.now() - startedAt,
     })
 
