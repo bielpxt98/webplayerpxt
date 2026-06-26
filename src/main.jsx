@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
@@ -6,20 +6,17 @@ import './styles.css'
 
 const STORAGE_KEY = 'authorized-iptv-player-account'
 const FAVORITES_STORAGE_KEY = 'authorized-iptv-player-favorites'
+const SESSION_DURATION_MS = 6 * 60 * 60 * 1000
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
 const MASKED_PASSWORD = '••••••'
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
 
 
 const navigationItems = [
-  { id: 'account', title: 'ACCOUNT', subtitle: 'Login e conexão', icon: '👤' },
   { id: 'live', title: 'LIVE TV', subtitle: 'Canais ao vivo', icon: '📺' },
   { id: 'movies', title: 'MOVIES', subtitle: 'Filmes', icon: '🎬' },
   { id: 'series', title: 'SERIES', subtitle: 'Séries', icon: '▣' },
-  { id: 'radios', title: 'RADIOS', subtitle: 'Estações de rádio', icon: '📻' },
-  { id: 'others', title: 'OUTROS', subtitle: 'Itens sem categoria', icon: '◌' },
   { id: 'favorites', title: 'FAVORITES', subtitle: 'Favoritos', icon: '★' },
-  { id: 'recents', title: 'RECENTES', subtitle: 'Últimos acessos', icon: '↺' },
 ]
 
 function buildStreamProxyUrl(url) {
@@ -64,28 +61,12 @@ function buildXtreamLoginUrl({ server, username, password }) {
   return `${normalizedServer}/player_api.php?${params.toString()}`
 }
 
-function maskSensitiveUrl(url, password) {
-  if (!url || !password) return url
-  return url
-}
-
-function hasMaskedPasswordInUrl(url = '') {
-  return String(url).includes(MASKED_PASSWORD) || String(url).includes('%E2%80%A2')
-}
-
 function hasCompleteSessionCredentials(credentials) {
   return Boolean(credentials?.server && credentials?.username && credentials?.password && !isMaskedPassword(credentials.password) && !String(credentials.password).includes('•'))
 }
 
 function buildXtreamPlaybackUrl(sessionCredentials, path, streamId, extension) {
   const playbackError = getSessionCredentialsPlaybackError(sessionCredentials)
-  const isMaskedPasswordUsed = Boolean(sessionCredentials?.password && (isMaskedPassword(sessionCredentials.password) || String(sessionCredentials.password).includes('•')))
-  console.info('[Playback credentials] raw password source: sessionCredentials')
-  console.info(`[Playback credentials] isMaskedPasswordUsed: ${isMaskedPasswordUsed}`)
-  console.info('[Playback credentials]', {
-    rawPasswordSource: 'sessionCredentials',
-    isMaskedPasswordUsed,
-  })
   if (playbackError || !hasCompleteSessionCredentials(sessionCredentials)) return ''
 
   const normalizedServer = normalizeServer(sessionCredentials.server)
@@ -107,25 +88,32 @@ function getPlayableItemUrl(item, sessionCredentials) {
   return ''
 }
 
-function maskChannelUrl(url) {
-  return url || ''
-}
-
-function loadSavedAccount() {
+function getSavedSession() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY))
-    return saved ? { ...EMPTY_ACCOUNT, ...saved, remember: true } : EMPTY_ACCOUNT
+    if (!saved?.expiresAt || Date.now() > saved.expiresAt || isMaskedPassword(saved.password) || String(saved.password || '').includes('•')) {
+      localStorage.removeItem(STORAGE_KEY)
+      return null
+    }
+    return saved
   } catch {
-    return EMPTY_ACCOUNT
+    localStorage.removeItem(STORAGE_KEY)
+    return null
   }
 }
 
+function loadSavedAccount() {
+  const saved = getSavedSession()
+  return saved ? { ...EMPTY_ACCOUNT, server: saved.server, username: saved.username, password: MASKED_PASSWORD, remember: true } : EMPTY_ACCOUNT
+}
+
 function saveAccount(account) {
-  if (account.remember) {
+  if (account.remember && !isMaskedPassword(account.password) && !String(account.password || '').includes('•')) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       server: account.server,
       username: account.username,
       password: account.password,
+      expiresAt: Date.now() + SESSION_DURATION_MS,
     }))
     return
   }
@@ -349,8 +337,6 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
-  const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
-  const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl)
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
   }, [])
@@ -364,12 +350,6 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     resolveRequestIdRef.current = resolveRequestId
     const m3u8Url = buildXtreamPlaybackUrl(sessionCredentials, 'live', streamId, 'm3u8')
 
-    console.info('[LIVE TV] Selected channel playback URL', {
-      name: channel.nome,
-      streamId,
-      url: m3u8Url,
-      action: 'play-immediately-and-resolve-in-parallel',
-    })
     setSelectedChannel(channel)
     setResolvedPlaybackUrl('')
     setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '', redirected: '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '' })
@@ -416,7 +396,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
           <div className="placeholder-icon">📺</div>
           <p className="eyebrow">LIVE TV</p>
           <h2>Nenhuma lista carregada</h2>
-          <p>Conecte sua conta na tela ACCOUNT para o MediaManager organizar os canais ao vivo da API Xtream.</p>
+          <p>Carregando catálogo...</p>
         </section>
       </main>
     )
@@ -454,33 +434,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
             <p>{activeChannel ? 'Reproduzindo o canal selecionado.' : 'Clique em um canal abaixo para iniciar a reprodução.'}</p>
-            <div className="live-url-diagnostic" aria-live="polite">
-              <span>Diagnóstico temporário LIVE TV</span>
-              <code>username: {sessionCredentials?.username ? 'OK' : 'ausente'}</code>
-              <code>password: {sessionCredentials?.password ? 'REAL (visível no diagnóstico temporário)' : 'ausente'}</code>
-              <code>stream_url: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
-              <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
-              <code>nome do canal: {activeChannel?.nome || 'nenhum canal selecionado'}</code>
-              <code>formato solicitado: /live/username/password/stream_id.m3u8</code>
-              <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
-              <code>URL real .m3u8: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
-              <code>URL original: {playbackDebug.originalUrl || activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
-              <code>URL final resolvida: {playbackDebug.finalUrl || 'aguardando redirect/token'}</code>
-              <code>statusCode: {playbackDebug.statusCode || 'aguardando resposta'}</code>
-              <code>redirected: {playbackDebug.redirected === '' ? 'aguardando resposta' : String(playbackDebug.redirected)}</code>
-              <code>contentType: {playbackDebug.contentType || 'aguardando resposta'}</code>
-              <code>URL em uso no player: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
-              <code>URL atualmente carregada no video: {playbackDebug.loadedVideoUrl || 'aguardando carregamento'}</code>
-              <code>Hls.isSupported(): {playbackDebug.hlsSupported || 'aguardando player'}</code>
-              <code>canPlayType('application/vnd.apple.mpegurl'): {playbackDebug.nativeHlsSupport || 'aguardando player'}</code>
-              <code>MANIFEST_PARSED: {playbackDebug.manifestParsed || 'aguardando manifesto'}</code>
-              <code>video.play(): {playbackDebug.playStatus || 'aguardando play'}</code>
-              {playbackDebug.playError && <code>video.play() erro: {playbackDebug.playError}</code>}
-              {playbackDebug.videoError && <code>video.error: {playbackDebug.videoError}</code>}
-              {playbackDebug.failedUrl && <code>última URL que falhou: {playbackDebug.failedUrl}</code>}
-              {playbackDebug.errorSource && <code>erro do player: {playbackDebug.errorSource} - {playbackDebug.errorDetail}</code>}
-              {hasMaskedLiveUrl && <code>erro: URL ainda está usando senha mascarada</code>}
-            </div>
+
           </div>
         </div>
 
@@ -536,7 +490,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   )
 }
 
-function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, afterContent }) {
+function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, afterContent, onBack, onCategoryBack }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
 
@@ -549,15 +503,20 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [items])
 
-  const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : groups[0]?.name || ''
   const filteredItems = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
     return items.filter((item) => {
-      const matchesGroup = !activeGroup || item.grupo === activeGroup
+      const matchesGroup = !selectedGroup || item.grupo === selectedGroup
       const matchesSearch = !normalizedSearch || `${item.nome} ${item.grupo}`.toLowerCase().includes(normalizedSearch)
       return matchesGroup && matchesSearch
     })
-  }, [activeGroup, items, searchTerm])
+  }, [items, searchTerm, selectedGroup])
+
+  function goBackToCategories() {
+    setSelectedGroup('')
+    setSearchTerm('')
+    onCategoryBack?.()
+  }
 
   if (!items.length) {
     return (
@@ -566,62 +525,61 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
           <div className="placeholder-icon">{icon}</div>
           <p className="eyebrow">{title}</p>
           <h2>Nenhum item carregado</h2>
-          <p>Conecte sua conta na tela ACCOUNT para carregar o catálogo Xtream.</p>
+          <p>Carregando catálogo...</p>
+          <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+        </section>
+      </main>
+    )
+  }
+
+  if (!selectedGroup) {
+    return (
+      <main className="section-home" aria-label={`Categorias de ${title}`}>
+        <section className="panel section-home-panel">
+          <div className="section-heading compact">
+            <div>
+              <p className="eyebrow">Categorias</p>
+              <h2>{title}</h2>
+            </div>
+            <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+          </div>
+          <div className="category-grid" role="list" aria-label={`Categorias de ${title}`}>
+            {groups.map((group) => (
+              <button key={group.name} type="button" className="category-card" onClick={() => setSelectedGroup(group.name)}>
+                <span>{icon}</span>
+                <strong>{group.name}</strong>
+                <small>{group.count} itens</small>
+              </button>
+            ))}
+          </div>
         </section>
       </main>
     )
   }
 
   return (
-    <main className="live-layout" aria-label={`Navegação de ${title}`}>
-      <aside className="panel group-panel">
-        <div className="section-heading compact">
-          <div><p className="eyebrow">Categorias</p><h2>{title}</h2></div>
-          <span className="category-total">{groups.length}</span>
-        </div>
-        <div className="group-list" role="list" aria-label={`Categorias de ${title}`}>
-          {groups.map((group) => (
-            <button key={group.name} type="button" className={group.name === activeGroup ? 'active' : ''} onClick={() => setSelectedGroup(group.name)}>
-              <span>{group.name}</span><small>{group.count}</small>
-            </button>
-          ))}
-        </div>
-      </aside>
-
+    <main className="catalog-detail" aria-label={`Itens de ${selectedGroup}`}>
       <section className="panel channel-panel">
-        <div className="live-player-card">
-          <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
-          <div className="live-player-info">
-            <p className="eyebrow">Player {title}</p>
-            <h3>{playerTitle || `Selecione em ${title}`}</h3>
-            <p>{playerDescription || 'Clique em um item abaixo para iniciar.'}</p>
-            {['MOVIES', 'SERIES'].includes(title) && (
-              <div className="live-url-diagnostic" aria-live="polite">
-                <span>Diagnóstico temporário {title}</span>
-                <code>stream_url: {playerUrl ? 'construída usando a senha real' : 'selecione um item para gerar a URL'}</code>
-                <code>URL: {playerUrl || 'selecione um item para gerar a URL'}</code>
-                {playerFallbackUrl && <code>fallback: {playerFallbackUrl}</code>}
-                {(hasMaskedPasswordInUrl(playerUrl) || hasMaskedPasswordInUrl(playerFallbackUrl)) && <code>erro: URL ainda está usando senha mascarada</code>}
-              </div>
-            )}
+        <div className="section-heading">
+          <div><p className="eyebrow">{title}</p><h2>{selectedGroup}</h2></div>
+          <div className="detail-actions">
+            <button className="secondary-button" type="button" onClick={goBackToCategories}>VOLTAR</button>
+            <label className="search-label"><span>Buscar</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome" /></label>
           </div>
         </div>
-        <div className="section-heading">
-          <div><p className="eyebrow">{activeGroup || title}</p><h2>{filteredItems.length} itens encontrados</h2></div>
-          <label className="search-label"><span>Buscar</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" /></label>
-        </div>
-        <div className="channel-count-row"><span>{items.length} itens carregados</span><span>{favorites.length} favoritos</span></div>
+        <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span></div>
+        {afterContent}
         {filteredItems.length > 0 ? (
-          <div className="channel-grid" aria-label={`Itens de ${activeGroup}`}>
+          <div className="channel-grid media-card-grid" aria-label={`Itens de ${selectedGroup}`}>
             {filteredItems.map((item) => {
               const itemKey = createItemKey(item)
               const isFavorite = Boolean(findFavorite(favorites, item))
               const poster = getItemPoster(item)
               return (
-                <article className={`channel-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
+                <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
                   <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
                   <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
-                    <div className="channel-logo-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
+                    <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
                     <strong title={item.nome}>{item.nome}</strong>
                     <small title={item.grupo}>{item.grupo}</small>
                   </button>
@@ -630,13 +588,22 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
             })}
           </div>
         ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
-        {afterContent}
+        {(playerUrl || selectedItem) && (
+          <div className="live-player-card catalog-player-card">
+            <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
+            <div className="live-player-info">
+              <p className="eyebrow">Player {title}</p>
+              <h3>{playerTitle || `Selecione em ${title}`}</h3>
+              <p>{playerDescription || 'Clique em um item acima para iniciar.'}</p>
+            </div>
+          </div>
+        )}
       </section>
     </main>
   )
 }
 
-function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite }) {
+function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, onBack }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
 
   return (
@@ -651,11 +618,13 @@ function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite }
       playerTitle={selectedMovie?.nome || ''}
       playerDescription={selectedMovie ? 'Reproduzindo filme selecionado.' : 'Clique em um filme abaixo para iniciar a reprodução.'}
       playerUrl={selectedMovie ? getPlayableItemUrl(selectedMovie, sessionCredentials) : ''}
+      onBack={onBack}
+      onCategoryBack={() => setSelectedMovie(null)}
     />
   )
 }
 
-function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite }) {
+function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, onBack }) {
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [seriesInfo, setSeriesInfo] = useState(null)
   const [selectedEpisode, setSelectedEpisode] = useState(null)
@@ -713,11 +682,11 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite }
   ) : null
 
   return (
-    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodeUrl} afterContent={episodesPanel} />
+    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodeUrl} afterContent={episodesPanel} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
   )
 }
 
-function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggleFavorite, onOpenSeries }) {
+function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggleFavorite, onOpenSeries, onBack }) {
   const catalogByKey = useMemo(() => catalogItems.reduce((accumulator, item) => ({ ...accumulator, [createItemKey(item)]: item }), {}), [catalogItems])
   const favoriteItems = favorites.map((favorite) => catalogByKey[favorite.key] || favorite)
   const [selectedItem, setSelectedItem] = useState(null)
@@ -730,13 +699,13 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
     setSelectedItem(item)
   }
 
-  return <CatalogScreen title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} />
+  return <CatalogScreen onBack={onBack} title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} />
 }
 
 function Topbar({ screen, onNavigate }) {
   return (
     <header className="topbar">
-      <button className="logo" onClick={() => onNavigate('account')} aria-label="Abrir account">
+      <button className="logo" onClick={() => onNavigate('home')} aria-label="Abrir início">
         <span>▶</span>
         <strong>BlueStream</strong>
       </button>
@@ -752,7 +721,6 @@ function Topbar({ screen, onNavigate }) {
 }
 
 function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onRefresh, onClear, loading, status }) {
-  const generatedUrl = useMemo(() => buildXtreamLoginUrl(getAccountCredentials(account)), [account])
 
   return (
     <main className="account-page">
@@ -778,18 +746,6 @@ function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onR
         </div>
 
         <label className="remember-row"><input type="checkbox" checked={account.remember} onChange={(event) => setAccount({ ...account, remember: event.target.checked })} /><span>Lembrar login</span></label>
-
-        {generatedUrl && <p className="hint">URL gerada: <span>{maskSensitiveUrl(generatedUrl, getAccountCredentials(account).password)}</span></p>}
-        {sessionCredentials?.password && (
-          <div className="live-url-diagnostic" aria-live="polite">
-            <span>Diagnóstico de credenciais</span>
-            <code>username: OK</code>
-            <code>password: REAL (visível no diagnóstico temporário)</code>
-            <code>stream_url: construída usando a senha real</code>
-            <code>URL: {generatedUrl}</code>
-            {hasMaskedPasswordInUrl(generatedUrl) && <code>erro: URL ainda está usando senha mascarada</code>}
-          </div>
-        )}
 
         <div className="actions">
           <button className="primary-button" onClick={onConnect} disabled={loading}>{loading ? 'Conectando...' : 'Conectar'}</button>
@@ -824,6 +780,29 @@ function PlaceholderScreen({ title, subtitle, icon, mediaItems = [], total = 0 }
   )
 }
 
+function HomeScreen({ loading, onNavigate }) {
+  const cards = navigationItems
+
+  return (
+    <main className="home section-home" aria-label="Tela inicial do catálogo">
+      <section className="panel section-home-panel">
+        <p className="eyebrow">Catálogo IPTV</p>
+        <h1>Escolha uma área</h1>
+        {loading && <p className="catalog-loading">Carregando catálogo...</p>}
+        <div className="main-menu">
+          {cards.map((item) => (
+            <button key={item.id} type="button" className="menu-card" onClick={() => onNavigate(item.id)}>
+              <span className="menu-icon">{item.icon}</span>
+              <strong>{item.title}</strong>
+              <small>{item.subtitle}</small>
+            </button>
+          ))}
+        </div>
+      </section>
+    </main>
+  )
+}
+
 function FooterNavigation({ screen, onNavigate }) {
   return (
     <footer className="footer-actions">
@@ -837,16 +816,42 @@ function FooterNavigation({ screen, onNavigate }) {
 }
 
 function App() {
-  const [screen, setScreen] = useState('account')
+  const [screen, setScreen] = useState(getSavedSession() ? 'home' : 'account')
   const [account, setAccount] = useState(loadSavedAccount)
   const [sessionCredentials, setSessionCredentials] = useState(null)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
   const [favorites, setFavorites] = useState(loadSavedFavorites)
   const mediaManager = useMediaManager()
+  const isConnected = Boolean(sessionCredentials)
 
-  async function handleConnection(successMessage = 'Conectado com sucesso') {
-    const formCredentials = getAccountCredentials(account)
+  useEffect(() => {
+    const saved = getSavedSession()
+    if (!saved) return undefined
+    const timeoutId = window.setTimeout(() => {
+      localStorage.removeItem(STORAGE_KEY)
+      setSessionCredentials(null)
+      mediaManager.clearCatalog()
+      setAccount(EMPTY_ACCOUNT)
+      setScreen('account')
+      setStatus({ type: 'error', message: 'Sessão expirada após 6 horas. Faça login novamente.' })
+    }, Math.max(saved.expiresAt - Date.now(), 0))
+    return () => window.clearTimeout(timeoutId)
+  }, [mediaManager, sessionCredentials])
+
+  useEffect(() => {
+    const saved = getSavedSession()
+    if (!saved) return
+    const restoredCredentials = { server: saved.server, username: saved.username, password: saved.password, remember: true }
+    setSessionCredentials({ server: normalizeServer(saved.server), username: saved.username.trim(), password: saved.password })
+    setAccount({ ...EMPTY_ACCOUNT, server: saved.server, username: saved.username, password: MASKED_PASSWORD, remember: true })
+    handleConnection('Sessão restaurada', restoredCredentials)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+
+  async function handleConnection(successMessage = 'Conectado com sucesso', credentialsOverride = null) {
+    const formCredentials = credentialsOverride || getAccountCredentials(account)
     const authCredentials = isMaskedPassword(formCredentials.password)
       ? { ...formCredentials, password: sessionCredentials?.password || '' }
       : formCredentials
@@ -885,6 +890,7 @@ function App() {
         type: 'success',
         message: `${successMessage}. Catálogo carregado: ${counts.live || loadedCatalog.live.length} canais, ${counts.movies || loadedCatalog.movies.length} filmes e ${counts.series || loadedCatalog.series.length} séries.`,
       })
+      setScreen('home')
     } catch (error) {
       setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
     } finally {
@@ -900,6 +906,7 @@ function App() {
     setFavorites([])
     localStorage.removeItem(FAVORITES_STORAGE_KEY)
     setStatus({ type: 'success', message: 'Dados removidos deste navegador.' })
+    setScreen('account')
   }
 
   function toggleFavoriteItem(item) {
@@ -926,23 +933,25 @@ function App() {
   return (
     <div className="app-shell">
       <div className="background-glow" />
-      <Topbar screen={screen} onNavigate={setScreen} />
+      {isConnected && <Topbar screen={screen} onNavigate={setScreen} />}
 
-      {screen === 'account' ? (
+      {!isConnected || screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
+      ) : screen === 'home' ? (
+        <HomeScreen loading={loading} onNavigate={setScreen} />
       ) : screen === 'live' ? (
         <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} />
       ) : screen === 'movies' ? (
-        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
       ) : screen === 'series' ? (
-        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
       ) : screen === 'favorites' ? (
-        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} />
+        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} onBack={() => setScreen('home')} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
 
-      <FooterNavigation screen={screen} onNavigate={setScreen} />
+      {isConnected && <FooterNavigation screen={screen} onNavigate={setScreen} />}
     </div>
   )
 }
