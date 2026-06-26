@@ -1247,3 +1247,27 @@ input:focus {
     grid-template-columns: minmax(420px, 1.2fr) minmax(240px, .8fr);
   }
 }
+
+.search-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(117, 217, 255, .16);
+  border-radius: 999px;
+  background: rgba(0, 9, 24, .24);
+  color: #cfefff;
+}
+
+.search-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(207, 239, 255, .32);
+  border-top-color: #75d9ff;
+  border-radius: 50%;
+  animation: search-spin .8s linear infinite;
+}
+
+@keyframes search-spin {
+  to { transform: rotate(360deg); }
+}

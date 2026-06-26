@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
@@ -226,13 +226,100 @@ function sortByName(items) {
   return [...items].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }))
 }
 
+const SEARCH_DEBOUNCE_MS = 350
+const MIN_SEARCH_CHARS = 2
+const MAX_SEARCH_RESULTS = 50
+
 function normalizeSearchText(value) {
-  return String(value || '').trim().toLowerCase()
+  return String(value || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
 }
 
 function itemMatchesSearch(item, normalizedSearch) {
   if (!normalizedSearch) return true
-  return `${item?.nome || ''} ${item?.grupo || ''}`.toLowerCase().includes(normalizedSearch)
+  return normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`).includes(normalizedSearch)
+}
+
+function useDebouncedValue(value, delayMs = SEARCH_DEBOUNCE_MS) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), delayMs)
+    return () => window.clearTimeout(timeoutId)
+  }, [delayMs, value])
+
+  return debouncedValue
+}
+
+function useCatalogSearch({ items, searchIndex = [], searchTerm, filterItem }) {
+  const normalizedInput = normalizeSearchText(searchTerm)
+  const debouncedSearch = useDebouncedValue(normalizedInput)
+  const deferredSearch = useDeferredValue(debouncedSearch)
+  const hasSearchText = normalizedInput.length > 0
+  const canSearch = deferredSearch.length >= MIN_SEARCH_CHARS
+  const isSearchPending = normalizedInput.length >= MIN_SEARCH_CHARS && normalizedInput !== debouncedSearch
+
+  const results = useMemo(() => {
+    const baseItems = filterItem ? items.filter(filterItem) : items
+    if (!canSearch) return normalizedInput.length === 1 ? [] : baseItems
+
+    const indexedResults = (searchIndex.length ? searchIndex : baseItems.map((item) => ({ item, searchable: normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`) })))
+      .filter((entry) => (!filterItem || filterItem(entry.item)) && entry.searchable.includes(deferredSearch))
+      .slice(0, MAX_SEARCH_RESULTS)
+      .map((entry) => entry.item)
+
+    return indexedResults
+  }, [canSearch, deferredSearch, filterItem, items, normalizedInput.length, searchIndex])
+
+  return { results, hasSearchText, canSearch, isSearchPending }
+}
+
+
+function VirtualizedGrid({ items, className = 'channel-grid', ariaLabel, renderItem, estimateItemHeight = 210, overscanRows = 2 }) {
+  const containerRef = useRef(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(520)
+  const [columns, setColumns] = useState(1)
+
+  useEffect(() => {
+    const element = containerRef.current
+    if (!element) return undefined
+
+    function measure() {
+      const styles = window.getComputedStyle(element)
+      const columnCount = styles.gridTemplateColumns.split(' ').filter(Boolean).length || 1
+      setColumns(columnCount)
+      setViewportHeight(element.clientHeight || 520)
+    }
+
+    measure()
+    const resizeObserver = new ResizeObserver(measure)
+    resizeObserver.observe(element)
+    return () => resizeObserver.disconnect()
+  }, [])
+
+  const rowCount = Math.ceil(items.length / columns)
+  const startRow = Math.max(0, Math.floor(scrollTop / estimateItemHeight) - overscanRows)
+  const visibleRows = Math.ceil(viewportHeight / estimateItemHeight) + overscanRows * 2
+  const endRow = Math.min(rowCount, startRow + visibleRows)
+  const startIndex = startRow * columns
+  const endIndex = Math.min(items.length, endRow * columns)
+  const visibleItems = items.slice(startIndex, endIndex)
+
+  return (
+    <div ref={containerRef} className={className} aria-label={ariaLabel} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      <div style={{ height: startRow * estimateItemHeight, gridColumn: '1 / -1' }} aria-hidden="true" />
+      {visibleItems.map(renderItem)}
+      <div style={{ height: Math.max(0, (rowCount - endRow) * estimateItemHeight), gridColumn: '1 / -1' }} aria-hidden="true" />
+    </div>
+  )
+}
+
+function SearchStatus({ isSearchPending }) {
+  return isSearchPending ? <span className="search-status"><span className="search-spinner" aria-hidden="true" />Pesquisando...</span> : null
 }
 
 function loadSavedFavorites() {
@@ -435,7 +522,7 @@ async function resolvePlaybackUrl(originalUrl) {
   return data
 }
 
-function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials, onBack }) {
+function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
@@ -456,16 +543,13 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
   const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : ''
 
-  const normalizedSearch = normalizeSearchText(searchTerm)
-  const isSearching = Boolean(normalizedSearch)
-
-  const filteredChannels = useMemo(() => {
-    return channels.filter((channel) => {
-      const matchesGroup = isSearching || (activeGroup && channel.grupo === activeGroup)
-      const matchesSearch = itemMatchesSearch(channel, normalizedSearch)
-      return matchesGroup && matchesSearch
-    })
-  }, [activeGroup, channels, isSearching, normalizedSearch])
+  const hasLiveSearchInput = normalizeSearchText(searchTerm).length > 0
+  const { results: filteredChannels, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
+    items: channels,
+    searchIndex,
+    searchTerm,
+    filterItem: useCallback((channel) => hasLiveSearchInput || (activeGroup && channel.grupo === activeGroup), [activeGroup, hasLiveSearchInput]),
+  })
 
   const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
   const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel)) ? selectedChannel : null
@@ -539,8 +623,8 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
   const liveResultsGrid = (
     <>
-      <div className="channel-count-row"><span>{filteredChannels.length} canais encontrados</span><span>{favorites.length} favoritos</span></div>
-      {filteredChannels.length > 0 ? <div className="channel-grid" aria-label="Resultados globais de LIVE TV">{filteredChannels.map((channel) => { const channelKey = createChannelKey(channel); const quality = getChannelQuality(channel); const isFavorite = Boolean(findFavorite(favorites, channel)); return <article className="channel-card" key={channelKey} onClick={(event) => selectChannel(channel, event)} aria-label={`Canal ${channel.nome}`}><button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>★</button><button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}><div className="channel-logo-wrap">{channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}</div><strong title={channel.nome}>{channel.nome}</strong><small title={channel.grupo}>{channel.grupo}</small>{quality && <span className="quality-badge">{quality}</span>}</button></article> })}</div> : <p className="empty">Nenhum canal encontrado com a busca atual.</p>}
+      <div className="channel-count-row"><span>{filteredChannels.length} canais encontrados</span><span>{favorites.length} favoritos</span><SearchStatus isSearchPending={isSearchPending} /></div>
+      {isSearching && !canSearch ? <p className="empty">Digite pelo menos 2 caracteres para pesquisar.</p> : filteredChannels.length > 0 ? <VirtualizedGrid items={filteredChannels} ariaLabel="Resultados globais de LIVE TV" renderItem={(channel) => { const channelKey = createChannelKey(channel); const quality = getChannelQuality(channel); const isFavorite = Boolean(findFavorite(favorites, channel)); return <article className="channel-card" key={channelKey} onClick={(event) => selectChannel(channel, event)} aria-label={`Canal ${channel.nome}`}><button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>★</button><button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}><div className="channel-logo-wrap">{channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}</div><strong title={channel.nome}>{channel.nome}</strong><small title={channel.grupo}>{channel.grupo}</small>{quality && <span className="quality-badge">{quality}</span>}</button></article> }} /> : <p className="empty">Nenhum canal encontrado com a busca atual.</p>}
     </>
   )
 
@@ -576,7 +660,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   )
 }
 
-function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, detailContent, afterContent, onBack, onCategoryBack, onPlayerBack }) {
+function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, detailContent, afterContent, onBack, onCategoryBack, onPlayerBack }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const playerPanelRef = useRef(null)
@@ -590,16 +674,13 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [items])
 
-  const normalizedSearch = normalizeSearchText(searchTerm)
-  const isSearching = Boolean(normalizedSearch)
-
-  const filteredItems = useMemo(() => {
-    return items.filter((item) => {
-      const matchesGroup = isSearching || !selectedGroup || item.grupo === selectedGroup
-      const matchesSearch = itemMatchesSearch(item, normalizedSearch)
-      return matchesGroup && matchesSearch
-    })
-  }, [isSearching, items, normalizedSearch, selectedGroup])
+  const hasCatalogSearchInput = normalizeSearchText(searchTerm).length > 0
+  const { results: filteredItems, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
+    items,
+    searchIndex,
+    searchTerm,
+    filterItem: useCallback((item) => hasCatalogSearchInput || !selectedGroup || item.grupo === selectedGroup, [hasCatalogSearchInput, selectedGroup]),
+  })
 
 
   useEffect(() => {
@@ -632,25 +713,23 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
 
   const itemsGrid = (
     <>
-      <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span></div>
-      {filteredItems.length > 0 ? (
-        <div className="channel-grid media-card-grid" aria-label={isSearching ? `Resultados globais de ${title}` : `Itens de ${selectedGroup}`}>
-          {filteredItems.map((item) => {
-            const itemKey = createItemKey(item)
-            const isFavorite = Boolean(findFavorite(favorites, item))
-            const poster = getItemPoster(item)
-            return (
-              <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
-                <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
-                <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
-                  <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
-                  <strong title={item.nome}>{item.nome}</strong>
-                  <small title={item.grupo}>{item.grupo}</small>
-                </button>
-              </article>
-            )
-          })}
-        </div>
+      <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span><SearchStatus isSearchPending={isSearchPending} /></div>
+      {isSearching && !canSearch ? <p className="empty">Digite pelo menos 2 caracteres para pesquisar.</p> : filteredItems.length > 0 ? (
+        <VirtualizedGrid className="channel-grid media-card-grid" items={filteredItems} ariaLabel={isSearching ? `Resultados globais de ${title}` : `Itens de ${selectedGroup}`} estimateItemHeight={270} renderItem={(item) => {
+          const itemKey = createItemKey(item)
+          const isFavorite = Boolean(findFavorite(favorites, item))
+          const poster = getItemPoster(item)
+          return (
+            <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
+              <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
+              <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
+                <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
+                <strong title={item.nome}>{item.nome}</strong>
+                <small title={item.grupo}>{item.grupo}</small>
+              </button>
+            </article>
+          )
+        }} />
       ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
     </>
   )
@@ -747,7 +826,7 @@ function MediaDetail({ item, icon, actionLabel, onAction, onBack, children }) {
   )
 }
 
-function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, onBack }) {
+function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
   const [playingMovie, setPlayingMovie] = useState(null)
   const originalMovieUrl = playingMovie ? getPlayableItemUrl(playingMovie, sessionCredentials) : ''
@@ -761,6 +840,7 @@ function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
       title="MOVIES"
       icon="🎬"
       items={items}
+      searchIndex={searchIndex}
       favorites={favorites}
       onToggleFavorite={onToggleFavorite}
       onSelectItem={(movie) => { setSelectedMovie(movie); setPlayingMovie(null) }}
@@ -776,7 +856,7 @@ function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
   )
 }
 
-function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, onBack }) {
+function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack }) {
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [seriesInfo, setSeriesInfo] = useState(null)
   const [selectedEpisode, setSelectedEpisode] = useState(null)
@@ -845,7 +925,7 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
   )
 
   return (
-    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} detailContent={seriesDetail} onPlayerBack={() => setSelectedEpisode(null)} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
+    <CatalogScreen title="SERIES" icon="▣" items={items} searchIndex={searchIndex} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} detailContent={seriesDetail} onPlayerBack={() => setSelectedEpisode(null)} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
   )
 }
 
@@ -1109,11 +1189,11 @@ function App() {
       ) : screen === 'home' ? (
         <HomeScreen loading={loading} onNavigate={setScreen} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => setScreen('home')} />
+        <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => setScreen('home')} />
       ) : screen === 'movies' ? (
-        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
+        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
       ) : screen === 'series' ? (
-        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
+        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} searchIndex={mediaManager.searchIndex.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
       ) : screen === 'favorites' ? (
         <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} onBack={() => setScreen('home')} />
       ) : (

@@ -17,6 +17,7 @@ function createEmptyCatalog() {
     others: [],
     all: [],
     groups: {},
+    searchIndex: { live: [], movies: [], series: [] },
     loadedAt: null,
     sourceUrl: '',
   }
@@ -98,6 +99,32 @@ function addCatalogItem(catalog, item) {
   catalog.groups[item.grupo] = [...(catalog.groups[item.grupo] || []), item]
 }
 
+function normalizeIndexText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+}
+
+function createSearchIndex(items = []) {
+  return items.map((item) => ({
+    key: `${item.tipo || 'ITEM'}:${item.streamId || item.id || item.nome}`,
+    item,
+    searchable: normalizeIndexText(`${item.nome || ''} ${item.grupo || ''}`),
+  }))
+}
+
+function attachSearchIndexes(catalog) {
+  return {
+    ...catalog,
+    searchIndex: {
+      live: createSearchIndex(catalog.live),
+      movies: createSearchIndex(catalog.movies),
+      series: createSearchIndex(catalog.series),
+    },
+  }
+}
+
 export function parseXtreamCatalog(apiData, credentials = {}) {
   const normalizedCredentials = {
     server: String(credentials.server || apiData?.server || '').replace(/\/+$/, ''),
@@ -143,7 +170,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
     }))
   })
 
-  return catalog
+  return attachSearchIndexes(catalog)
 }
 
 function getAttribute(line, attributeName) {
@@ -230,7 +257,7 @@ export function parseM3UPlaylist(content, sourceUrl = '') {
     itemIndex += 1
   })
 
-  return catalog
+  return attachSearchIndexes(catalog)
 }
 
 export function MediaManagerProvider({ children }) {
