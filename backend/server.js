@@ -8,30 +8,36 @@ const SERVICE_NAME = 'pxt-player-api';
 const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 10000);
 
 const defaultAllowedOrigins = [
+  process.env.FRONTEND_ORIGIN,
+  'https://stupendous-bombolone-32f796.netlify.app',
   'http://localhost:5173',
   'http://localhost:3000',
 ];
 
-const allowedOrigins = (process.env.CORS_ORIGIN || '')
-  .split(',')
+const allowedOrigins = [
+  ...defaultAllowedOrigins,
+  ...(process.env.CORS_ORIGIN || '').split(','),
+]
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(null, false);
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '32kb' }));
-app.use(
-  cors({
-    origin(origin, callback) {
-      const origins = [...defaultAllowedOrigins, ...allowedOrigins];
-
-      if (!origin || origins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error('Origin not allowed by CORS'));
-    },
-  }),
-);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: SERVICE_NAME });
@@ -111,6 +117,19 @@ app.use((err, _req, res, _next) => {
 
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
+
+function isAllowedOrigin(origin) {
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch (_error) {
+    return false;
+  }
+}
 
 function normalizeServerUrl(server) {
   const url = new URL(server);
