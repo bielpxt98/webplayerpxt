@@ -22,6 +22,11 @@ const navigationItems = [
   { id: 'recents', title: 'RECENTES', subtitle: 'Últimos acessos', icon: '↺' },
 ]
 
+function buildStreamProxyUrl(url) {
+  if (!url) return ''
+  return `${BACKEND_BASE_URL}/api/stream-proxy?url=${encodeURIComponent(url)}`
+}
+
 function normalizeServer(server = '') {
   const trimmed = server.trim().replace(/\/+$/, '')
   if (!trimmed) return ''
@@ -377,9 +382,10 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
       const canUseResolvedUrl = resolvedStream.finalUrl && Number(resolvedStream.statusCode) === 200
       const finalUrl = resolvedStream.finalUrl || m3u8Url
       const playbackUrl = canUseResolvedUrl ? finalUrl : m3u8Url
+      const proxiedPlaybackUrl = buildStreamProxyUrl(playbackUrl)
       setResolvedPlaybackUrl(playbackUrl)
       setPlaybackDebug({
-        url: playbackUrl,
+        url: proxiedPlaybackUrl,
         format: 'm3u8',
         originalUrl: resolvedStream.originalUrl || m3u8Url,
         finalUrl,
@@ -443,7 +449,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={playerPlaybackUrl} fallbackUrl={resolvedPlaybackUrl} contentType={playbackDebug.contentType} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
+          <HlsPlayer url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''} fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''} contentType={playbackDebug.contentType} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
           <div className="live-player-info">
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
@@ -584,7 +590,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={playerUrl || ''} fallbackUrl={playerFallbackUrl || ''} title={playerTitle || title} />
+          <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
           <div className="live-player-info">
             <p className="eyebrow">Player {title}</p>
             <h3>{playerTitle || `Selecione em ${title}`}</h3>
