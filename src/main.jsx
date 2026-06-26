@@ -310,7 +310,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
-  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '', redirected: '' })
+  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '', redirected: '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '' })
   const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState('')
   const resolveRequestIdRef = useRef(0)
 
@@ -363,18 +363,18 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
       name: channel.nome,
       streamId,
       url: m3u8Url,
-      action: 'resolve-before-playback',
+      action: 'play-immediately-and-resolve-in-parallel',
     })
     setSelectedChannel(channel)
     setResolvedPlaybackUrl('')
-    setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '', redirected: '' })
+    setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '', redirected: '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '' })
 
     if (!m3u8Url) return
 
     try {
       const resolvedStream = await resolvePlaybackUrl(m3u8Url)
       if (resolveRequestIdRef.current !== resolveRequestId) return
-      const canUseResolvedUrl = resolvedStream.finalUrl && [200, 302].includes(Number(resolvedStream.statusCode))
+      const canUseResolvedUrl = resolvedStream.finalUrl && Number(resolvedStream.statusCode) === 200
       const finalUrl = resolvedStream.finalUrl || m3u8Url
       const playbackUrl = canUseResolvedUrl ? finalUrl : m3u8Url
       setResolvedPlaybackUrl(playbackUrl)
@@ -443,7 +443,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={playerPlaybackUrl} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
+          <HlsPlayer url={playerPlaybackUrl} fallbackUrl={resolvedPlaybackUrl} contentType={playbackDebug.contentType} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
           <div className="live-player-info">
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
@@ -464,6 +464,13 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <code>redirected: {playbackDebug.redirected === '' ? 'aguardando resposta' : String(playbackDebug.redirected)}</code>
               <code>contentType: {playbackDebug.contentType || 'aguardando resposta'}</code>
               <code>URL em uso no player: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
+              <code>URL atualmente carregada no video: {playbackDebug.loadedVideoUrl || 'aguardando carregamento'}</code>
+              <code>Hls.isSupported(): {playbackDebug.hlsSupported || 'aguardando player'}</code>
+              <code>canPlayType('application/vnd.apple.mpegurl'): {playbackDebug.nativeHlsSupport || 'aguardando player'}</code>
+              <code>MANIFEST_PARSED: {playbackDebug.manifestParsed || 'aguardando manifesto'}</code>
+              <code>video.play(): {playbackDebug.playStatus || 'aguardando play'}</code>
+              {playbackDebug.playError && <code>video.play() erro: {playbackDebug.playError}</code>}
+              {playbackDebug.videoError && <code>video.error: {playbackDebug.videoError}</code>}
               {playbackDebug.failedUrl && <code>última URL que falhou: {playbackDebug.failedUrl}</code>}
               {playbackDebug.errorSource && <code>erro do player: {playbackDebug.errorSource} - {playbackDebug.errorDetail}</code>}
               {hasMaskedLiveUrl && <code>erro: URL ainda está usando senha mascarada</code>}

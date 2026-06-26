@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import Hls from 'hls.js'
 
 const PLAYBACK_EVENTS = [
   'loadedmetadata',
@@ -13,6 +14,8 @@ const PLAYBACK_EVENTS = [
   'abort',
   'error',
 ]
+
+const HLS_MIME_TYPES = ['application/x-mpegurl', 'application/vnd.apple.mpegurl']
 
 function getVideoError(video) {
   if (!video?.error) return null
@@ -32,22 +35,58 @@ function getPlaybackSnapshot(video) {
     error: getVideoError(video),
     duration: Number.isFinite(video.duration) ? video.duration : video.duration,
     currentSrc: video.currentSrc || video.src || '',
+    src: video.src || '',
   }
 }
 
-export default function HlsPlayer({ url, title, onPlaybackUrlChange }) {
-  const videoRef = useRef(null)
+function isHlsStream(url, contentType) {
+  const normalizedContentType = String(contentType || '').toLowerCase()
+  const normalizedUrl = String(url || '').toLowerCase().split('?')[0]
 
-  useEffect(() => {
-    onPlaybackUrlChange?.({ url: url || '', format: 'm3u8' })
-  }, [url, onPlaybackUrlChange])
+  return normalizedUrl.endsWith('.m3u8') || HLS_MIME_TYPES.some((mimeType) => normalizedContentType.includes(mimeType))
+}
+
+function playVideo(video, onPlaybackUrlChange) {
+  const playPromise = video.play()
+
+  if (playPromise && typeof playPromise.then === 'function') {
+    playPromise
+      .then(() => {
+        console.info('[HLS PLAYER] video.play() resolved', getPlaybackSnapshot(video))
+        onPlaybackUrlChange?.({ playStatus: 'resolved', playError: '' })
+      })
+      .catch((error) => {
+        const playError = `${error?.name || 'PlayError'}: ${error?.message || String(error)}`
+        console.info('[HLS PLAYER] video.play() rejected', {
+          ...getPlaybackSnapshot(video),
+          playError,
+        })
+        onPlaybackUrlChange?.({ playStatus: 'rejected', playError })
+      })
+  } else {
+    console.info('[HLS PLAYER] video.play() returned without promise', getPlaybackSnapshot(video))
+    onPlaybackUrlChange?.({ playStatus: 'no-promise', playError: '' })
+  }
+}
+
+export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', title, onPlaybackUrlChange }) {
+  const videoRef = useRef(null)
+  const [fallbackPlaybackUrl, setFallbackPlaybackUrl] = useState('')
+  const hlsRef = useRef(null)
+  const activeUrlRef = useRef('')
+  const retryingFallbackRef = useRef(false)
 
   useEffect(() => {
     const video = videoRef.current
     if (!video) return undefined
 
     const logPlaybackEvent = (event) => {
-      console.info(`[HLS PLAYER] ${event.type}`, getPlaybackSnapshot(video))
+      const snapshot = getPlaybackSnapshot(video)
+      console.info(`[HLS PLAYER] ${event.type}`, snapshot)
+      onPlaybackUrlChange?.({
+        loadedVideoUrl: snapshot.currentSrc,
+        videoError: snapshot.error ? JSON.stringify(snapshot.error) : '',
+      })
     }
 
     PLAYBACK_EVENTS.forEach((eventName) => {
@@ -59,38 +98,126 @@ export default function HlsPlayer({ url, title, onPlaybackUrlChange }) {
         video.removeEventListener(eventName, logPlaybackEvent)
       })
     }
-  }, [])
+  }, [onPlaybackUrlChange])
+
+  useEffect(() => {
+    setFallbackPlaybackUrl('')
+  }, [url])
+
+  const effectiveUrl = fallbackPlaybackUrl || url
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !url) return undefined
+    if (!video || !effectiveUrl) return undefined
 
-    const playPromise = video.play()
+    activeUrlRef.current = effectiveUrl
+    retryingFallbackRef.current = false
 
-    if (playPromise && typeof playPromise.then === 'function') {
-      playPromise
-        .then(() => {
-          console.info('[HLS PLAYER] video.play() resolved', getPlaybackSnapshot(video))
-        })
-        .catch((error) => {
-          console.info('[HLS PLAYER] video.play() rejected', {
-            ...getPlaybackSnapshot(video),
-            playError: {
-              name: error?.name || '',
-              message: error?.message || String(error),
-            },
-          })
-        })
-    } else {
-      console.info('[HLS PLAYER] video.play() returned without promise', getPlaybackSnapshot(video))
+    const hlsSupported = Hls.isSupported()
+    const nativeHlsSupport = video.canPlayType('application/vnd.apple.mpegurl')
+    const shouldUseHls = isHlsStream(effectiveUrl, contentType)
+
+    console.info('[HLS PLAYER] load source', {
+      originalUrl: url,
+      url: effectiveUrl,
+      contentType,
+      hlsSupported,
+      nativeHlsSupport,
+      shouldUseHls,
+    })
+
+    onPlaybackUrlChange?.({
+      url: effectiveUrl,
+      format: shouldUseHls ? 'm3u8' : 'native',
+      hlsSupported: String(hlsSupported),
+      nativeHlsSupport: nativeHlsSupport || 'no',
+      loadedVideoUrl: video.currentSrc || video.src || '',
+      manifestParsed: '',
+      playStatus: '',
+      playError: '',
+      videoError: '',
+    })
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy()
+      hlsRef.current = null
     }
 
-    return undefined
-  }, [url])
+    video.pause()
+    video.removeAttribute('src')
+    video.load()
+
+    if (shouldUseHls && hlsSupported) {
+      const hls = new Hls({ enableWorker: true })
+      hlsRef.current = hls
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        console.info('[HLS PLAYER] MANIFEST_PARSED', getPlaybackSnapshot(video))
+        onPlaybackUrlChange?.({ manifestParsed: 'sim', loadedVideoUrl: video.currentSrc || video.src || '' })
+        playVideo(video, onPlaybackUrlChange)
+      })
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        console.info('[HLS PLAYER] Hls.js error', data)
+        onPlaybackUrlChange?.({
+          errorSource: data?.fatal ? 'hls-fatal' : 'hls-warning',
+          errorDetail: `${data?.type || 'unknown'}: ${data?.details || 'sem detalhes'}`,
+          failedUrl: activeUrlRef.current,
+        })
+
+        if (data?.fatal && fallbackUrl && fallbackUrl !== activeUrlRef.current && !retryingFallbackRef.current) {
+          retryingFallbackRef.current = true
+          setFallbackPlaybackUrl(fallbackUrl)
+        }
+      })
+
+      hls.loadSource(effectiveUrl)
+      hls.attachMedia(video)
+    } else {
+      video.src = effectiveUrl
+      video.load()
+      playVideo(video, onPlaybackUrlChange)
+    }
+
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy()
+        hlsRef.current = null
+      }
+    }
+  }, [effectiveUrl, url, fallbackUrl, contentType, onPlaybackUrlChange])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return undefined
+
+    const handleError = () => {
+      const failedUrl = activeUrlRef.current
+      const videoError = getVideoError(video)
+
+      if (fallbackUrl && fallbackUrl !== failedUrl && !retryingFallbackRef.current) {
+        retryingFallbackRef.current = true
+        console.info('[HLS PLAYER] retrying fallback URL after video.error', { failedUrl, fallbackUrl, videoError })
+        onPlaybackUrlChange?.({ failedUrl, errorSource: 'video-error-original', errorDetail: JSON.stringify(videoError || {}) })
+        setFallbackPlaybackUrl(fallbackUrl)
+        return
+      }
+
+      onPlaybackUrlChange?.({
+        failedUrl,
+        errorSource: fallbackUrl === failedUrl ? 'video-error-final' : 'video-error',
+        errorDetail: JSON.stringify(videoError || {}),
+        videoError: JSON.stringify(videoError || {}),
+      })
+    }
+
+    video.addEventListener('error', handleError)
+    return () => video.removeEventListener('error', handleError)
+  }, [fallbackUrl, onPlaybackUrlChange])
 
   return (
     <div className="hls-player" aria-live="polite">
-      <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} src={url || ''} />
+      <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} />
     </div>
   )
 }
