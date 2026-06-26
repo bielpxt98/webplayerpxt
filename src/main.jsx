@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
@@ -9,6 +9,7 @@ const FAVORITES_STORAGE_KEY = 'authorized-iptv-player-favorites'
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
 const MASKED_PASSWORD = '••••••'
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000
 
 
 const navigationItems = [
@@ -106,21 +107,51 @@ function maskChannelUrl(url) {
   return url || ''
 }
 
-function loadSavedAccount() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY))
-    return saved ? { ...EMPTY_ACCOUNT, ...saved, remember: true } : EMPTY_ACCOUNT
-  } catch {
-    return EMPTY_ACCOUNT
+function normalizeSavedSession(saved) {
+  const loggedInAt = saved?.loggedInAt || saved?.savedAt || ''
+  const loggedInAtTime = Date.parse(loggedInAt)
+  const isExpired = !loggedInAtTime || Date.now() - loggedInAtTime > SESSION_TTL_MS
+  const hasRealPassword = saved?.password && !isMaskedPassword(saved.password) && !String(saved.password).includes('•')
+
+  if (!saved || isExpired || !saved.server || !saved.username || !hasRealPassword) {
+    localStorage.removeItem(STORAGE_KEY)
+    return null
   }
+
+  return {
+    server: normalizeServer(saved.server),
+    username: String(saved.username || '').trim(),
+    password: String(saved.password || '').trim(),
+    loggedInAt,
+  }
+}
+
+function loadSavedSession() {
+  try {
+    return normalizeSavedSession(JSON.parse(localStorage.getItem(STORAGE_KEY)))
+  } catch {
+    localStorage.removeItem(STORAGE_KEY)
+    return null
+  }
+}
+
+function loadSavedAccount() {
+  const savedSession = loadSavedSession()
+  return savedSession
+    ? { server: savedSession.server, username: savedSession.username, password: MASKED_PASSWORD, remember: true }
+    : EMPTY_ACCOUNT
 }
 
 function saveAccount(account) {
   if (account.remember) {
+    const realPassword = String(account.password || '').trim()
+    if (!realPassword || isMaskedPassword(realPassword) || realPassword.includes('•')) return
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      server: account.server,
-      username: account.username,
-      password: account.password,
+      server: normalizeServer(account.server),
+      username: String(account.username || '').trim(),
+      password: realPassword,
+      loggedInAt: new Date().toISOString(),
     }))
     return
   }
@@ -285,7 +316,7 @@ function normalizeEpisodes(seriesInfo) {
   ))
 }
 
-function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials }) {
+function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials, sessionRestored }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
@@ -422,11 +453,12 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
             </div>
             <div className="live-url-diagnostic" aria-live="polite">
               <span>Diagnóstico temporário LIVE TV</span>
+              <code>sessão restaurada: {sessionRestored ? 'sim' : 'não'}</code>
               <code>username: {sessionCredentials?.username ? 'OK' : 'ausente'}</code>
-              <code>password: {sessionCredentials?.password ? 'REAL (visível no diagnóstico temporário)' : 'ausente'}</code>
+              <code>senha interna: {sessionCredentials?.password ? (isSessionPasswordMasked ? 'MASCARADA' : 'REAL') : 'ausente'}</code>
               <code>stream_url: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
-              <code>nome do canal: {activeChannel?.nome || 'nenhum canal selecionado'}</code>
+              <code>canal selecionado: {activeChannel?.nome || 'nenhum canal selecionado'}</code>
               <code>formato solicitado: /live/username/password/stream_id.{playbackFormat}</code>
               <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL real .m3u8: {selectedPlaybackMatchesChannel ? selectedPlayback.m3u8Url : activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : 'selecione um canal para gerar a URL'}</code>
@@ -703,7 +735,7 @@ function Topbar({ screen, onNavigate }) {
   )
 }
 
-function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onRefresh, onClear, loading, status }) {
+function AccountScreen({ account, setAccount, sessionCredentials, sessionRestored, onConnect, onRefresh, onClear, loading, status }) {
   const generatedUrl = useMemo(() => buildXtreamLoginUrl(getAccountCredentials(account)), [account])
 
   return (
@@ -735,8 +767,9 @@ function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onR
         {sessionCredentials?.password && (
           <div className="live-url-diagnostic" aria-live="polite">
             <span>Diagnóstico de credenciais</span>
+            <code>sessão restaurada: {sessionRestored ? 'sim' : 'não'}</code>
             <code>username: OK</code>
-            <code>password: REAL (visível no diagnóstico temporário)</code>
+            <code>senha interna: {isMaskedPassword(sessionCredentials.password) || String(sessionCredentials.password).includes('•') ? 'MASCARADA' : 'REAL'}</code>
             <code>stream_url: construída usando a senha real</code>
             <code>URL: {generatedUrl}</code>
             {hasMaskedPasswordInUrl(generatedUrl) && <code>erro: URL ainda está usando senha mascarada</code>}
@@ -789,13 +822,54 @@ function FooterNavigation({ screen, onNavigate }) {
 }
 
 function App() {
-  const [screen, setScreen] = useState('account')
+  const [initialRestoredSession] = useState(loadSavedSession)
+  const restoredSessionRef = useRef(initialRestoredSession)
+  const autoRestoreStartedRef = useRef(false)
+  const [screen, setScreen] = useState(initialRestoredSession ? 'live' : 'account')
   const [account, setAccount] = useState(loadSavedAccount)
-  const [sessionCredentials, setSessionCredentials] = useState(null)
+  const [sessionCredentials, setSessionCredentials] = useState(initialRestoredSession)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
   const [favorites, setFavorites] = useState(loadSavedFavorites)
+  const [sessionRestored, setSessionRestored] = useState(Boolean(initialRestoredSession))
   const mediaManager = useMediaManager()
+
+  useEffect(() => {
+    const restoredSession = restoredSessionRef.current
+    if (!restoredSession || autoRestoreStartedRef.current) return
+
+    autoRestoreStartedRef.current = true
+    setLoading(true)
+    setStatus({ type: '', message: 'Restaurando sessão salva neste navegador...' })
+
+    validateXtreamAccount(restoredSession)
+      .then((responseData) => {
+        const catalogPayload = getCatalogPayload(responseData)
+        const loadedCatalog = mediaManager.loadXtreamCatalog(catalogPayload, restoredSession)
+        const counts = getCatalogCounts(catalogPayload)
+        setSessionCredentials(restoredSession)
+        setAccount({
+          server: restoredSession.server,
+          username: restoredSession.username,
+          password: MASKED_PASSWORD,
+          remember: true,
+        })
+        setScreen('live')
+        setStatus({
+          type: 'success',
+          message: `Sessão restaurada. Catálogo carregado: ${counts.live || loadedCatalog.live.length} canais, ${counts.movies || loadedCatalog.movies.length} filmes e ${counts.series || loadedCatalog.series.length} séries.`,
+        })
+      })
+      .catch((error) => {
+        localStorage.removeItem(STORAGE_KEY)
+        setSessionCredentials(null)
+        setSessionRestored(false)
+        setAccount(EMPTY_ACCOUNT)
+        setScreen('account')
+        setStatus({ type: 'error', message: `Sessão salva expirada ou inválida. Entre novamente. (${error.message})` })
+      })
+      .finally(() => setLoading(false))
+  }, [mediaManager])
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
     const formCredentials = getAccountCredentials(account)
@@ -815,6 +889,7 @@ function App() {
       const responseData = await validateXtreamAccount(authCredentials)
       const realPassword = authCredentials.password.trim()
       saveAccount({ ...authCredentials, password: realPassword })
+      setSessionRestored(false)
       const catalogPayload = getCatalogPayload(responseData)
       const loadedCatalog = mediaManager.loadXtreamCatalog(catalogPayload, {
         server: normalizeServer(authCredentials.server),
@@ -848,6 +923,7 @@ function App() {
     localStorage.removeItem(STORAGE_KEY)
     setAccount(EMPTY_ACCOUNT)
     setSessionCredentials(null)
+    setSessionRestored(false)
     mediaManager.clearCatalog()
     setFavorites([])
     localStorage.removeItem(FAVORITES_STORAGE_KEY)
@@ -881,9 +957,9 @@ function App() {
       <Topbar screen={screen} onNavigate={setScreen} />
 
       {screen === 'account' ? (
-        <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
+        <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} sessionRestored={sessionRestored} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} />
+        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} sessionRestored={sessionRestored} />
       ) : screen === 'movies' ? (
         <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'series' ? (
