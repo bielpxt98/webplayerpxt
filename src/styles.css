@@ -757,3 +757,164 @@ input:focus {
   background: transparent;
   text-align: left;
 }
+
+
+/* Compact media layout: keep player, lists and episode panels high in the viewport. */
+.app-shell {
+  overflow-y: auto;
+  padding-top: 16px;
+  padding-bottom: 96px;
+}
+
+.topbar {
+  margin-bottom: 14px;
+}
+
+.live-layout {
+  align-items: start;
+  gap: 14px;
+}
+
+.group-panel,
+.channel-panel {
+  padding: clamp(14px, 2vw, 22px);
+  border-radius: 24px;
+}
+
+.section-heading {
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.group-list {
+  gap: 8px;
+  max-height: calc(100vh - 240px);
+}
+
+.group-list button {
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.live-player-card {
+  grid-template-columns: minmax(260px, .95fr) minmax(220px, 1.05fr);
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 14px;
+  padding: 10px;
+  border-radius: 18px;
+}
+
+.hls-player,
+.hls-player video {
+  min-height: 150px;
+}
+
+.live-player-info h3 {
+  margin-bottom: 6px;
+}
+
+.live-url-diagnostic {
+  max-height: 170px;
+  overflow: auto;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 10px;
+}
+
+.channel-count-row {
+  margin-bottom: 10px;
+}
+
+.channel-grid {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  max-height: calc(100vh - 430px);
+}
+
+.channel-card {
+  min-height: 126px;
+  border-radius: 18px;
+  padding: 12px 10px;
+}
+
+.channel-play-button {
+  padding: 12px 10px;
+  gap: 7px;
+}
+
+.channel-logo-wrap {
+  width: 70px;
+  height: 48px;
+  border-radius: 14px;
+}
+
+.channel-card img {
+  max-width: 62px;
+  max-height: 42px;
+}
+
+.series-episodes-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(117, 217, 255, .16);
+  border-radius: 20px;
+  background: rgba(0, 9, 24, .24);
+}
+
+.series-episodes-panel h2 {
+  margin: 0;
+  font-size: clamp(1.25rem, 2.4vw, 1.85rem);
+}
+
+.episode-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  max-height: 34vh;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.episode-list li {
+  min-width: 0;
+}
+
+.episode-button {
+  align-items: center;
+  border: 1px solid rgba(117, 217, 255, .14);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, .07);
+}
+
+.episode-button.active,
+.episode-button:hover {
+  border-color: rgba(117, 217, 255, .66);
+  background: rgba(117, 217, 255, .15);
+}
+
+.episode-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.episode-button small {
+  flex: 0 0 auto;
+  color: #a9c6de;
+}
+
+@media (max-width: 700px) {
+  .live-player-card {
+    grid-template-columns: 1fr;
+  }
+
+  .channel-grid,
+  .group-list,
+  .episode-list {
+    max-height: none;
+  }
+}
