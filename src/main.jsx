@@ -238,6 +238,11 @@ function normalizeSearchText(value) {
     .toLowerCase()
 }
 
+function pushAppHistoryState(state) {
+  if (typeof window === 'undefined') return
+  window.history.pushState({ app: 'webplayerpxt', ...state }, '')
+}
+
 function itemMatchesSearch(item, normalizedSearch) {
   if (!normalizedSearch) return true
   return normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`).includes(normalizedSearch)
@@ -259,12 +264,12 @@ function useCatalogSearch({ items, searchIndex = [], searchTerm, filterItem }) {
   const debouncedSearch = useDebouncedValue(normalizedInput)
   const deferredSearch = useDeferredValue(debouncedSearch)
   const hasSearchText = normalizedInput.length > 0
-  const canSearch = deferredSearch.length >= MIN_SEARCH_CHARS
+  const canSearch = normalizedInput.length >= MIN_SEARCH_CHARS && deferredSearch.length >= MIN_SEARCH_CHARS
   const isSearchPending = normalizedInput.length >= MIN_SEARCH_CHARS && normalizedInput !== debouncedSearch
 
   const results = useMemo(() => {
     const baseItems = filterItem ? items.filter(filterItem) : items
-    if (!canSearch) return normalizedInput.length === 1 ? [] : baseItems
+    if (!canSearch) return []
 
     const indexedResults = (searchIndex.length ? searchIndex : baseItems.map((item) => ({ item, searchable: normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`) })))
       .filter((entry) => (!filterItem || filterItem(entry.item)) && entry.searchable.includes(deferredSearch))
@@ -551,6 +556,7 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     filterItem: useCallback((channel) => hasLiveSearchInput || (activeGroup && channel.grupo === activeGroup), [activeGroup, hasLiveSearchInput]),
   })
 
+  const isLiveSearchActive = canSearch
   const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
   const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel)) ? selectedChannel : null
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
@@ -583,6 +589,8 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     const initialProxyUrl = cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : buildStreamProxyUrl(m3u8Url)
 
     setSelectedChannel(channel)
+    setSearchTerm('')
+    pushAppHistoryState({ screen: 'live', view: 'player' })
     setResolvedPlaybackUrl(cachedStream?.finalUrl || '')
     setPlaybackDebug({ url: initialProxyUrl, format: 'm3u8', originalUrl: m3u8Url, finalUrl: cachedStream?.finalUrl || '', statusCode: cachedStream?.statusCode ?? '', contentType: cachedStream?.contentType || '', redirected: cachedStream ? Boolean(cachedStream.redirected) : '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '', mixedContentFound: /^http:\/\//i.test(m3u8Url) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: initialProxyUrl, cacheUsed: cachedStream ? 'sim' : 'não', resolveTimeMs: cachedStream ? 0 : '', playerStartTimeMs: 0 })
     if (!m3u8Url || cachedStream) return
@@ -603,6 +611,33 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
       setPlaybackDebug((currentDebug) => ({ ...currentDebug, errorSource: 'resolve-stream', errorDetail: error.message }))
     }
   }
+
+  function openLiveGroup(groupName) {
+    setSelectedGroup(groupName)
+    pushAppHistoryState({ screen: 'live', view: 'category' })
+  }
+
+  function closeLivePlayer() {
+    setSelectedChannel(null)
+    setResolvedPlaybackUrl('')
+  }
+
+  useEffect(() => {
+    function handlePopState() {
+      if (selectedChannel) {
+        closeLivePlayer()
+        return
+      }
+      if (activeGroup) {
+        setSelectedGroup('')
+        setSearchTerm('')
+        return
+      }
+      onBack()
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [activeGroup, selectedChannel, onBack])
 
   function toggleChannelFavorite(channel, event) {
     event.preventDefault()
@@ -628,32 +663,32 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     </>
   )
 
-  if (activeChannel && !isSearching) {
+  if (activeChannel && !isLiveSearchActive) {
     return (
       <main className="single-screen" aria-label={`Player do canal ${activeChannel.nome}`} ref={playerPanelRef}>
         <section className="panel channel-panel player-only-panel">
-          <div className="section-heading compact"><div><p className="eyebrow">Player LIVE TV</p><h2>{activeChannel.nome}</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={() => { setSelectedChannel(null); setResolvedPlaybackUrl('') }}>VOLTAR</button></div></div>
+          <div className="section-heading compact"><div><p className="eyebrow">Player LIVE TV</p><h2>{activeChannel.nome}</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={closeLivePlayer}>VOLTAR</button></div></div>
           <div className="live-player-card player-only-card"><HlsPlayer url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''} fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''} contentType={playbackDebug.contentType} title={activeChannel.nome} onPlaybackUrlChange={updatePlaybackDebug} /><div className="live-player-info"><p className="eyebrow">Ao vivo</p><h3>{activeChannel.nome}</h3><p>Reproduzindo o canal selecionado.</p></div></div>
         </section>
       </main>
     )
   }
 
-  if (!activeGroup && !isSearching) {
+  if (!activeGroup && !isLiveSearchActive) {
     return (
       <main className="section-home" aria-label="Categorias de LIVE TV">
         <section className="panel section-home-panel">
           <div className="section-heading compact"><div><p className="eyebrow">Categorias</p><h2>LIVE TV</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div></div>
-          <div className="category-grid" role="list" aria-label="Categorias de TV">{groups.map((group) => <button key={group.name} type="button" className="category-card" onClick={() => setSelectedGroup(group.name)}><span>📺</span><strong>{group.name}</strong><small>{group.count} canais</small></button>)}</div>
+          <div className="category-grid" role="list" aria-label="Categorias de TV">{groups.map((group) => <button key={group.name} type="button" className="category-card" onClick={() => openLiveGroup(group.name)}><span>📺</span><strong>{group.name}</strong><small>{group.count} canais</small></button>)}</div>
         </section>
       </main>
     )
   }
 
   return (
-    <main className="catalog-detail" aria-label={isSearching ? 'Busca global de LIVE TV' : `Canais de ${activeGroup}`}>
+    <main className="catalog-detail" aria-label={isLiveSearchActive ? 'Busca global de LIVE TV' : `Canais de ${activeGroup}`}>
       <section className="panel channel-panel">
-        <div className="section-heading"><div><p className="eyebrow">{isSearching ? 'Busca global' : activeGroup}</p><h2>{isSearching ? 'Resultados em todos os canais' : `${activeGroupTotal} canais na categoria`}</h2></div><div className="detail-actions"><button className="secondary-button" type="button" onClick={() => { setSelectedGroup(''); setSearchTerm('') }}>VOLTAR</button>{liveSearchControl}</div></div>
+        <div className="section-heading"><div><p className="eyebrow">{isLiveSearchActive ? 'Busca global' : activeGroup}</p><h2>{isLiveSearchActive ? 'Resultados em todos os canais' : `${activeGroupTotal} canais na categoria`}</h2></div><div className="detail-actions"><button className="secondary-button" type="button" onClick={() => { setSelectedGroup(''); setSearchTerm('') }}>VOLTAR</button>{liveSearchControl}</div></div>
         {liveResultsGrid}
       </section>
     </main>
@@ -683,15 +718,48 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
   })
 
 
+  const isCatalogSearchActive = canSearch
+
   useEffect(() => {
     if (playerUrl || playerFallbackUrl) playerPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [playerFallbackUrl, playerUrl])
+
+  function openCatalogGroup(groupName) {
+    setSelectedGroup(groupName)
+    pushAppHistoryState({ screen: title.toLowerCase(), view: 'category' })
+  }
+
+  function selectCatalogItem(item) {
+    setSearchTerm('')
+    onSelectItem(item)
+    pushAppHistoryState({ screen: title.toLowerCase(), view: 'detail' })
+  }
 
   function goBackToCategories() {
     setSelectedGroup('')
     setSearchTerm('')
     onCategoryBack?.()
   }
+
+  useEffect(() => {
+    function handlePopState() {
+      if (playerUrl || playerFallbackUrl) {
+        onPlayerBack?.()
+        return
+      }
+      if (selectedItem) {
+        onCategoryBack?.()
+        return
+      }
+      if (selectedGroup) {
+        goBackToCategories()
+        return
+      }
+      onBack?.()
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [onBack, onCategoryBack, onPlayerBack, playerFallbackUrl, playerUrl, selectedGroup, selectedItem])
 
   if (!items.length) {
     return (
@@ -715,14 +783,14 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
     <>
       <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span><SearchStatus isSearchPending={isSearchPending} /></div>
       {isSearching && !canSearch ? <p className="empty">Digite pelo menos 2 caracteres para pesquisar.</p> : filteredItems.length > 0 ? (
-        <VirtualizedGrid className="channel-grid media-card-grid" items={filteredItems} ariaLabel={isSearching ? `Resultados globais de ${title}` : `Itens de ${selectedGroup}`} estimateItemHeight={270} renderItem={(item) => {
+        <VirtualizedGrid className="channel-grid media-card-grid" items={filteredItems} ariaLabel={isCatalogSearchActive ? `Resultados globais de ${title}` : `Itens de ${selectedGroup}`} estimateItemHeight={270} renderItem={(item) => {
           const itemKey = createItemKey(item)
           const isFavorite = Boolean(findFavorite(favorites, item))
           const poster = getItemPoster(item)
           return (
             <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
               <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
-              <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
+              <button className="channel-play-button" type="button" onClick={() => selectCatalogItem(item)} aria-label={`Abrir ${item.nome}`}>
                 <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
                 <strong title={item.nome}>{item.nome}</strong>
                 <small title={item.grupo}>{item.grupo}</small>
@@ -734,7 +802,7 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
     </>
   )
 
-  if ((playerUrl || playerFallbackUrl) && selectedItem && !isSearching) {
+  if ((playerUrl || playerFallbackUrl) && selectedItem && !isCatalogSearchActive) {
     return (
       <main className="single-screen" aria-label={`Player de ${playerTitle || title}`} ref={playerPanelRef}>
         <section className="panel channel-panel player-only-panel">
@@ -751,7 +819,7 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
     )
   }
 
-  if (selectedItem && detailContent && !isSearching) {
+  if (selectedItem && detailContent && !isCatalogSearchActive) {
     return (
       <main className="single-screen" aria-label={`Detalhes de ${selectedItem.nome}`}>
         <section className="panel channel-panel">
@@ -763,7 +831,7 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
     )
   }
 
-  if (!selectedGroup && !isSearching) {
+  if (!selectedGroup && !isCatalogSearchActive) {
     return (
       <main className="section-home" aria-label={`Categorias de ${title}`}>
         <section className="panel section-home-panel">
@@ -776,7 +844,7 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
           </div>
           <div className="category-grid" role="list" aria-label={`Categorias de ${title}`}>
             {groups.map((group) => (
-              <button key={group.name} type="button" className="category-card" onClick={() => setSelectedGroup(group.name)}>
+              <button key={group.name} type="button" className="category-card" onClick={() => openCatalogGroup(group.name)}>
                 <span>{icon}</span>
                 <strong>{group.name}</strong>
                 <small>{group.count} itens</small>
@@ -789,10 +857,10 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
   }
 
   return (
-    <main className="catalog-detail" aria-label={isSearching ? `Busca global de ${title}` : `Itens de ${selectedGroup}`}>
+    <main className="catalog-detail" aria-label={isCatalogSearchActive ? `Busca global de ${title}` : `Itens de ${selectedGroup}`}>
       <section className="panel channel-panel">
         <div className="section-heading">
-          <div><p className="eyebrow">{isSearching ? 'Busca global' : title}</p><h2>{isSearching ? `Resultados em ${title}` : selectedGroup}</h2></div>
+          <div><p className="eyebrow">{isCatalogSearchActive ? 'Busca global' : title}</p><h2>{isCatalogSearchActive ? `Resultados em ${title}` : selectedGroup}</h2></div>
           <div className="detail-actions">
             <button className="secondary-button" type="button" onClick={goBackToCategories}>VOLTAR</button>
             {searchControl}
@@ -1169,6 +1237,32 @@ function App() {
     })
   }
 
+  const isHandlingBrowserBackRef = useRef(false)
+
+  useEffect(() => {
+    window.history.replaceState({ app: 'webplayerpxt', screen }, '')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    function handlePopState(event) {
+      const nextScreen = event.state?.screen || 'home'
+      isHandlingBrowserBackRef.current = true
+      setScreen(nextScreen)
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  const navigateScreen = useCallback((nextScreen) => {
+    setScreen(nextScreen)
+    if (isHandlingBrowserBackRef.current) {
+      isHandlingBrowserBackRef.current = false
+      return
+    }
+    pushAppHistoryState({ screen: nextScreen })
+  }, [])
+
   const currentItem = navigationItems.find((item) => item.id === screen) || navigationItems[0]
   const mediaByScreen = {
     live: mediaManager.live,
@@ -1182,25 +1276,25 @@ function App() {
   return (
     <div className="app-shell">
       <div className="background-glow" />
-      {isConnected && <Topbar screen={screen} onNavigate={setScreen} />}
+      {isConnected && <Topbar screen={screen} onNavigate={navigateScreen} />}
 
       {!isConnected || screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'home' ? (
-        <HomeScreen loading={loading} onNavigate={setScreen} />
+        <HomeScreen loading={loading} onNavigate={navigateScreen} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => setScreen('home')} />
+        <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => navigateScreen('home')} />
       ) : screen === 'movies' ? (
-        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
+        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} />
       ) : screen === 'series' ? (
-        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} searchIndex={mediaManager.searchIndex.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
+        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} searchIndex={mediaManager.searchIndex.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} />
       ) : screen === 'favorites' ? (
-        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} onBack={() => setScreen('home')} />
+        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => navigateScreen('series')} onBack={() => navigateScreen('home')} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
 
-      {isConnected && <FooterNavigation screen={screen} onNavigate={setScreen} />}
+      {isConnected && <FooterNavigation screen={screen} onNavigate={navigateScreen} />}
     </div>
   )
 }
