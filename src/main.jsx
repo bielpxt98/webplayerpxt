@@ -6,7 +6,7 @@ import './styles.css'
 
 const STORAGE_KEY = 'authorized-iptv-player-account'
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
-const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || 'https://webplayerpxt.onrender.com').replace(/\/+$/, '')
+const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
 
 
 const navigationItems = [

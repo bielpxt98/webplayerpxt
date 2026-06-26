@@ -1,6 +1,6 @@
-# PXT Player API
+# PXT Player no Render
 
-Backend separado em Node/Express para o PXT Player. Ele foi criado para rodar no Render e atender o frontend hospedado no Netlify, começando pela validação de credenciais Xtream sem baixar listas completas de IPTV.
+Aplicação Node/Express que serve a API do PXT Player e também os arquivos estáticos do frontend React/Vite gerados em `dist`.
 
 ## Endpoints
 
@@ -44,15 +44,32 @@ Resposta com dados básicos, sem expor a senha:
 }
 ```
 
+## Frontend servido pelo Express
+
+- O build do React/Vite é gerado na pasta `dist` na raiz do repositório.
+- O Express serve os assets estáticos dessa pasta.
+- Rotas iniciadas por `/api` continuam reservadas para o backend.
+- Qualquer outra rota retorna `dist/index.html`, permitindo navegação direta nas telas do frontend.
+- O frontend usa a mesma origem por padrão para chamar `/api/xtream/validate`; `VITE_BACKEND_BASE_URL` continua disponível apenas para desenvolvimento ou ambientes separados.
+
 ## Regras atuais
 
 - Não baixa `get.php`.
 - Não carrega canais, filmes ou séries.
 - Não salva dados no Supabase.
 - Não retorna a senha na resposta.
-- Usa CORS para permitir o frontend do Netlify (`https://stupendous-bombolone-32f796.netlify.app`) e origens locais de desenvolvimento, incluindo preflight `OPTIONS`.
+- Usa CORS para permitir origens configuradas por variável de ambiente e origens locais de desenvolvimento.
 
 ## Como rodar localmente
+
+Instale e gere o frontend na raiz:
+
+```bash
+npm install
+npm run build
+```
+
+Instale e rode o backend:
 
 ```bash
 cd backend
@@ -61,7 +78,7 @@ npm install
 npm run dev
 ```
 
-A API ficará disponível em `http://localhost:3001` por padrão.
+A aplicação ficará disponível em `http://localhost:3001` por padrão.
 
 Exemplo de teste:
 
@@ -74,20 +91,21 @@ curl http://localhost:3001/health
 | Variável | Obrigatória | Exemplo | Descrição |
 | --- | --- | --- | --- |
 | `PORT` | Não | `3001` | Porta local. No Render, ela é injetada automaticamente. |
-| `CORS_ORIGIN` | Sim em produção | `https://stupendous-bombolone-32f796.netlify.app` | Origem do frontend no Netlify. Aceita múltiplas origens separadas por vírgula. |
-| `FRONTEND_ORIGIN` | Não | `https://stupendous-bombolone-32f796.netlify.app` | Alias opcional de `CORS_ORIGIN`; também aceita múltiplas origens separadas por vírgula. |
+| `CORS_ORIGIN` | Não | `https://seu-servico.onrender.com` | Origens extras permitidas. Aceita múltiplas origens separadas por vírgula. |
+| `FRONTEND_ORIGIN` | Não | `https://seu-servico.onrender.com` | Alias opcional de `CORS_ORIGIN`; também aceita múltiplas origens separadas por vírgula. |
+| `VITE_BACKEND_BASE_URL` | Não | `http://localhost:3001` | Base URL alternativa para o frontend em desenvolvimento. Em produção no Render, deixe vazio para usar a mesma origem. |
 | `XTREAM_TIMEOUT_MS` | Não | `10000` | Timeout das chamadas para `player_api.php`, em milissegundos. |
 
 ## Como publicar no Render
 
 1. Suba este repositório para o GitHub.
 2. No Render, crie um novo **Web Service** apontando para o repositório.
-3. Configure o **Root Directory** como `backend`.
+3. Deixe **Root Directory** vazio.
 4. Use **Runtime** `Node`.
-5. Configure o **Build Command** como `npm install`.
-6. Configure o **Start Command** como `npm start`.
-7. Adicione as variáveis de ambiente:
-   - `CORS_ORIGIN=https://stupendous-bombolone-32f796.netlify.app`
-   - ou `FRONTEND_ORIGIN=https://stupendous-bombolone-32f796.netlify.app`
-   - `XTREAM_TIMEOUT_MS=10000` (opcional)
-8. Faça o deploy e teste `https://seu-servico.onrender.com/health`.
+5. Configure **Build Command** como `npm install && npm run build && cd backend && npm install`.
+6. Configure **Start Command** como `cd backend && npm start`.
+7. Configure variáveis opcionais, se necessário:
+   - `CORS_ORIGIN=https://seu-servico.onrender.com`
+   - `FRONTEND_ORIGIN=https://seu-servico.onrender.com`
+   - `XTREAM_TIMEOUT_MS=10000`
+8. Faça o deploy e teste `https://seu-servico.onrender.com/health` e a página inicial do frontend.
