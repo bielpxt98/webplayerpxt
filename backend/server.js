@@ -3,6 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 const app = express();
@@ -44,7 +45,8 @@ const corsOptions = {
     callback(new Error('Origin not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Accept', 'Range'],
+  exposedHeaders: ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'],
   optionsSuccessStatus: 204,
 };
 
@@ -108,6 +110,75 @@ app.post('/api/xtream/validate', async (req, res) => {
 });
 
 
+
+
+app.get('/api/stream-proxy', async (req, res) => {
+  const requestedUrl = req.query?.url;
+
+  if (!requestedUrl || typeof requestedUrl !== 'string') {
+    return res.status(400).json({ ok: false, error: 'url query parameter is required.' });
+  }
+
+  let streamUrl;
+
+  try {
+    streamUrl = normalizeStreamUrl(requestedUrl);
+  } catch (_error) {
+    return res.status(400).json({ ok: false, error: 'url must be a valid http or https URL.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const proxyHeaders = {
+      Accept: req.get('accept') || 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
+    };
+
+    const range = req.get('range');
+    if (range) {
+      proxyHeaders.Range = range;
+    }
+
+    const upstreamResponse = await fetch(streamUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: proxyHeaders,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    const contentType = upstreamResponse.headers.get('content-type') || getContentTypeFromUrl(upstreamResponse.url || streamUrl.toString());
+    const isManifest = isM3u8Response(upstreamResponse.url || streamUrl.toString(), contentType);
+
+    res.status(upstreamResponse.status);
+    copyProxyResponseHeaders(upstreamResponse.headers, res, { includeLength: !isManifest });
+    res.setHeader('Content-Type', contentType);
+
+    if (!upstreamResponse.body) {
+      return res.end();
+    }
+
+    if (isManifest) {
+      const manifest = await upstreamResponse.text();
+      return res.send(rewriteM3u8Manifest(manifest, upstreamResponse.url || streamUrl.toString(), req));
+    }
+
+    return Readable.fromWeb(upstreamResponse.body).pipe(res);
+  } catch (error) {
+    clearTimeout(timeout);
+
+    if (res.headersSent) {
+      return res.destroy(error);
+    }
+
+    const isAbort = error?.name === 'AbortError';
+    return res.status(isAbort ? 504 : 502).json({
+      ok: false,
+      error: isAbort ? 'Stream proxy request timed out.' : 'Could not proxy stream URL.',
+    });
+  }
+});
 
 app.post('/api/stream/resolve', async (req, res) => {
   const { originalUrl, url } = req.body || {};
@@ -258,6 +329,55 @@ async function requestStreamHeaders(streamUrl) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+
+function getContentTypeFromUrl(url) {
+  const pathname = new URL(url).pathname.toLowerCase();
+  if (pathname.endsWith('.m3u8')) return 'application/vnd.apple.mpegurl';
+  if (pathname.endsWith('.ts')) return 'video/mp2t';
+  return 'application/octet-stream';
+}
+
+function isM3u8Response(url, contentType) {
+  const normalizedContentType = String(contentType || '').toLowerCase();
+  const pathname = new URL(url).pathname.toLowerCase();
+  return pathname.endsWith('.m3u8') || normalizedContentType.includes('mpegurl') || normalizedContentType.includes('application/vnd.apple');
+}
+
+function copyProxyResponseHeaders(headers, res, { includeLength }) {
+  ['accept-ranges', 'cache-control', 'content-range', 'etag', 'last-modified'].forEach((headerName) => {
+    const value = headers.get(headerName);
+    if (value) res.setHeader(headerName, value);
+  });
+
+  if (includeLength) {
+    const contentLength = headers.get('content-length');
+    if (contentLength) res.setHeader('content-length', contentLength);
+  }
+}
+
+function rewriteM3u8Manifest(manifest, manifestUrl, req) {
+  const baseUrl = new URL(manifestUrl);
+
+  return manifest.split(/(\r?\n)/).map((part) => {
+    if (!part || /^\r?\n$/.test(part)) return part;
+
+    const trimmed = part.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      return rewriteM3u8AttributeUris(part, baseUrl, req);
+    }
+
+    return buildProxyUrl(new URL(trimmed, baseUrl), req);
+  }).join('');
+}
+
+function rewriteM3u8AttributeUris(line, baseUrl, req) {
+  return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${buildProxyUrl(new URL(uri, baseUrl), req)}"`);
+}
+
+function buildProxyUrl(targetUrl, req) {
+  return `/api/stream-proxy?url=${encodeURIComponent(targetUrl.toString())}`;
 }
 
 function normalizeStreamUrl(url) {
