@@ -12,6 +12,7 @@ const defaultAllowedOrigins = [
   'https://stupendous-bombolone-32f796.netlify.app',
   'http://localhost:5173',
   'http://localhost:3000',
+  'https://stupendous-bombolone-32f796.netlify.app',
 ];
 
 const allowedOrigins = [
@@ -24,6 +25,22 @@ const allowedOrigins = [
 const corsOptions = {
   origin(origin, callback) {
     if (!origin || isAllowedOrigin(origin)) {
+const configuredAllowedOrigins = [
+  process.env.CORS_ORIGIN,
+  process.env.FRONTEND_ORIGIN,
+]
+  .filter(Boolean)
+  .flatMap((origins) => origins.split(','))
+  .map((origin) => origin.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins])];
+
+const corsOptions = {
+  origin(origin, callback) {
+    const normalizedOrigin = origin?.replace(/\/+$/, '');
+
+    if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin)) {
       callback(null, true);
       return;
     }
@@ -32,6 +49,10 @@ const corsOptions = {
   },
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
+    callback(new Error('Origin not allowed by CORS'));
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Accept'],
   optionsSuccessStatus: 204,
 };
 
