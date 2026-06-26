@@ -357,6 +357,12 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     setSelectedChannel(channel)
   }
 
+  function toggleChannelFavorite(channel, event) {
+    event.preventDefault()
+    event.stopPropagation()
+    onToggleFavorite(channel)
+  }
+
   if (!channels.length) {
     return (
       <main className="placeholder-wrap">
@@ -418,14 +424,16 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <span>Diagnóstico temporário LIVE TV</span>
               <code>username: {sessionCredentials?.username ? 'OK' : 'ausente'}</code>
               <code>password: {sessionCredentials?.password ? 'REAL (visível no diagnóstico temporário)' : 'ausente'}</code>
-              <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : 'selecione um canal para gerar a URL'}</code>
+              <code>stream_url: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
+              <code>nome do canal: {activeChannel?.nome || 'nenhum canal selecionado'}</code>
               <code>formato solicitado: /live/username/password/stream_id.{playbackFormat}</code>
               <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <code>URL real .m3u8: {selectedPlaybackMatchesChannel ? selectedPlayback.m3u8Url : activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : 'selecione um canal para gerar a URL'}</code>
+              <code>URL fallback .ts: {selectedPlaybackMatchesChannel ? selectedPlayback.tsUrl : activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : 'selecione um canal para gerar a URL'}</code>
               <code>em uso agora: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
               {playbackDebug.failedUrl && <code>última URL que falhou: {playbackDebug.failedUrl}</code>}
               {playbackDebug.errorSource && <code>erro do player: {playbackDebug.errorSource} - {playbackDebug.errorDetail}</code>}
-              {playbackFormat === 'm3u8' && activeFallbackUrl && <code>fallback .ts: {activeFallbackUrl}</code>}
               {hasMaskedLiveUrl && <code>erro: URL ainda está usando senha mascarada</code>}
             </div>
           </div>
@@ -455,15 +463,20 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               const isFavorite = Boolean(findFavorite(favorites, channel))
 
               return (
-                <article className={`channel-card ${activeChannel && createChannelKey(activeChannel) === channelKey ? 'active' : ''}`} key={channelKey}>
-                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channel)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
+                <article
+                  className={`channel-card ${activeChannel && createChannelKey(activeChannel) === channelKey ? 'active' : ''}`}
+                  key={channelKey}
+                  onClick={(event) => selectChannel(channel, event)}
+                  aria-label={`Canal ${channel.nome}`}
+                >
+                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
                     ★
                   </button>
                   <button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}>
                     <div className="channel-logo-wrap">
-                    {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
-                  </div>
-                  <strong title={channel.nome}>{channel.nome}</strong>
+                      {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
+                    </div>
+                    <strong title={channel.nome}>{channel.nome}</strong>
                     {quality && <span className="quality-badge">{quality}</span>}
                   </button>
                 </article>
