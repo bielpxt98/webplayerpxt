@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 
+function isHlsUrl(url) {
+  return /\.m3u8(\?|#|$)/i.test(url || '')
+}
+
 function getErrorMessage(errorType) {
   if (errorType === Hls.ErrorTypes.NETWORK_ERROR) return 'Não foi possível carregar o canal. Verifique a URL ou tente outro canal.'
   if (errorType === Hls.ErrorTypes.MEDIA_ERROR) return 'O navegador não conseguiu reproduzir este canal.'
@@ -59,7 +63,7 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
     video.addEventListener('playing', handleCanPlay)
     video.addEventListener('error', handleError)
 
-    if (video.canPlayType('application/vnd.apple.mpegurl') || activeUrl === fallbackUrl) {
+    if (!isHlsUrl(activeUrl) || video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = activeUrl
     } else if (Hls.isSupported()) {
       hls = new Hls()
@@ -94,7 +98,7 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
   return (
     <div className="hls-player" aria-live="polite">
       <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} />
-      {isLoading && <div className="player-overlay">Carregando canal...</div>}
+      {isLoading && <div className="player-overlay">Carregando conteúdo...</div>}
       {error && <div className="player-error" role="alert">{error}</div>}
     </div>
   )

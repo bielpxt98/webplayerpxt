@@ -107,6 +107,46 @@ app.post('/api/xtream/validate', async (req, res) => {
   }
 });
 
+
+app.post('/api/xtream/series-info', async (req, res) => {
+  const { server, username, password, seriesId } = req.body || {};
+
+  if (!server || !username || !password || !seriesId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'server, username, password and seriesId are required.',
+    });
+  }
+
+  let apiUrl;
+
+  try {
+    apiUrl = new URL('/player_api.php', normalizeServerUrl(server));
+    apiUrl.searchParams.set('username', username);
+    apiUrl.searchParams.set('password', password);
+    apiUrl.searchParams.set('action', 'get_series_info');
+    apiUrl.searchParams.set('series_id', String(seriesId));
+  } catch (_error) {
+    return res.status(400).json({
+      ok: false,
+      error: 'server must be a valid http or https URL.',
+    });
+  }
+
+  try {
+    const data = await fetchXtreamJson(apiUrl);
+    return res.json(data);
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(error?.status || (isAbort ? 504 : 502)).json({
+      ok: false,
+      error: error?.publicMessage || (isAbort
+        ? 'Xtream API request timed out.'
+        : 'Could not load series info from Xtream API.'),
+    });
+  }
+});
+
 app.use('/api', (_req, res) => {
   return res.status(404).json({ ok: false, error: 'API route not found.' });
 });

@@ -5,6 +5,7 @@ import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
 import './styles.css'
 
 const STORAGE_KEY = 'authorized-iptv-player-account'
+const FAVORITES_STORAGE_KEY = 'authorized-iptv-player-favorites'
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
 
@@ -137,12 +138,107 @@ function getChannelQuality(channel) {
   return ''
 }
 
+function createItemKey(item) {
+  return `${item.tipo || 'ITEM'}:${item.streamId || item.id || item.nome}`
+}
+
 function createChannelKey(channel) {
-  return `${channel.id || channel.nome}-${channel.url}`
+  return createItemKey(channel)
 }
 
 function sortByName(items) {
   return [...items].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }))
+}
+
+function loadSavedFavorites() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY))
+    return Array.isArray(saved) ? saved : []
+  } catch {
+    return []
+  }
+}
+
+function saveFavorites(favorites) {
+  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favorites))
+}
+
+function getItemPoster(item) {
+  return item?.logo || item?.raw?.stream_icon || item?.raw?.cover || item?.raw?.cover_big || item?.raw?.movie_image || ''
+}
+
+function getItemContainerExtension(item) {
+  return String(item?.raw?.container_extension || item?.raw?.container || item?.container_extension || 'mp4').replace(/^\.+/, '') || 'mp4'
+}
+
+function createFavoriteSnapshot(item) {
+  return {
+    key: createItemKey(item),
+    id: item.id,
+    streamId: item.streamId,
+    nome: item.nome,
+    grupo: item.grupo,
+    logo: getItemPoster(item),
+    url: item.url,
+    fallbackUrl: item.fallbackUrl || '',
+    tipo: item.tipo,
+    raw: item.raw || {},
+  }
+}
+
+function findFavorite(favorites, item) {
+  const itemKey = createItemKey(item)
+  return favorites.find((favorite) => favorite.key === itemKey)
+}
+
+function buildSeriesInfoUrl(account, seriesId) {
+  const normalizedServer = normalizeServer(account.server)
+  if (!normalizedServer || !account.username.trim() || !account.password.trim() || !seriesId) return ''
+
+  const params = new URLSearchParams({
+    username: account.username.trim(),
+    password: account.password.trim(),
+    action: 'get_series_info',
+    series_id: String(seriesId),
+  })
+
+  return `${normalizedServer}/player_api.php?${params.toString()}`
+}
+
+async function fetchSeriesInfo(account, seriesId) {
+  const directUrl = buildSeriesInfoUrl(account, seriesId)
+  if (!directUrl) throw new Error('Dados da conta ou ID da série ausentes.')
+
+  const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/series-info`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      server: account.server,
+      username: account.username,
+      password: account.password,
+      seriesId,
+    }),
+  })
+
+  if (!response.ok) {
+    let errorMessage = `HTTP ${response.status}`
+    try {
+      const errorBody = await response.json()
+      errorMessage = errorBody.error || errorMessage
+    } catch {
+      errorMessage = await response.text() || errorMessage
+    }
+    throw new Error(errorMessage)
+  }
+
+  return response.json()
+}
+
+function normalizeEpisodes(seriesInfo) {
+  const episodesBySeason = seriesInfo?.episodes || {}
+  return Object.entries(episodesBySeason).flatMap(([seasonNumber, episodes]) => (
+    Array.isArray(episodes) ? episodes.map((episode) => ({ ...episode, seasonNumber })) : []
+  ))
 }
 
 function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
@@ -257,11 +353,11 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
             {filteredChannels.map((channel) => {
               const channelKey = createChannelKey(channel)
               const quality = getChannelQuality(channel)
-              const isFavorite = favorites.includes(channelKey)
+              const isFavorite = Boolean(findFavorite(favorites, channel))
 
               return (
                 <article className={`channel-card ${activeChannel && createChannelKey(activeChannel) === channelKey ? 'active' : ''}`} key={channelKey}>
-                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channelKey)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
+                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channel)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
                     ★
                   </button>
                   <button className="channel-play-button" type="button" onClick={() => selectChannel(channel)} aria-label={`Reproduzir ${channel.nome}`}>
@@ -281,6 +377,191 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
       </section>
     </main>
   )
+}
+
+function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl }) {
+  const [selectedGroup, setSelectedGroup] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
+
+  const groups = useMemo(() => {
+    const groupMap = items.reduce((accumulator, item) => {
+      const groupName = item.grupo || 'Sem categoria'
+      accumulator[groupName] = (accumulator[groupName] || 0) + 1
+      return accumulator
+    }, {})
+    return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
+  }, [items])
+
+  const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : groups[0]?.name || ''
+  const filteredItems = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase()
+    return items.filter((item) => {
+      const matchesGroup = !activeGroup || item.grupo === activeGroup
+      const matchesSearch = !normalizedSearch || `${item.nome} ${item.grupo}`.toLowerCase().includes(normalizedSearch)
+      return matchesGroup && matchesSearch
+    })
+  }, [activeGroup, items, searchTerm])
+
+  if (!items.length) {
+    return (
+      <main className="placeholder-wrap">
+        <section className="panel placeholder">
+          <div className="placeholder-icon">{icon}</div>
+          <p className="eyebrow">{title}</p>
+          <h2>Nenhum item carregado</h2>
+          <p>Conecte sua conta na tela ACCOUNT para carregar o catálogo Xtream.</p>
+        </section>
+      </main>
+    )
+  }
+
+  return (
+    <main className="live-layout" aria-label={`Navegação de ${title}`}>
+      <aside className="panel group-panel">
+        <div className="section-heading compact">
+          <div><p className="eyebrow">Categorias</p><h2>{title}</h2></div>
+          <span className="category-total">{groups.length}</span>
+        </div>
+        <div className="group-list" role="list" aria-label={`Categorias de ${title}`}>
+          {groups.map((group) => (
+            <button key={group.name} type="button" className={group.name === activeGroup ? 'active' : ''} onClick={() => setSelectedGroup(group.name)}>
+              <span>{group.name}</span><small>{group.count}</small>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <section className="panel channel-panel">
+        <div className="live-player-card">
+          <HlsPlayer url={playerUrl || ''} fallbackUrl={playerFallbackUrl || ''} title={playerTitle || title} />
+          <div className="live-player-info">
+            <p className="eyebrow">Player {title}</p>
+            <h3>{playerTitle || `Selecione em ${title}`}</h3>
+            <p>{playerDescription || 'Clique em um item abaixo para iniciar.'}</p>
+          </div>
+        </div>
+        <div className="section-heading">
+          <div><p className="eyebrow">{activeGroup || title}</p><h2>{filteredItems.length} itens encontrados</h2></div>
+          <label className="search-label"><span>Buscar</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" /></label>
+        </div>
+        <div className="channel-count-row"><span>{items.length} itens carregados</span><span>{favorites.length} favoritos</span></div>
+        {filteredItems.length > 0 ? (
+          <div className="channel-grid" aria-label={`Itens de ${activeGroup}`}>
+            {filteredItems.map((item) => {
+              const itemKey = createItemKey(item)
+              const isFavorite = Boolean(findFavorite(favorites, item))
+              const poster = getItemPoster(item)
+              return (
+                <article className={`channel-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
+                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
+                  <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
+                    <div className="channel-logo-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
+                    <strong title={item.nome}>{item.nome}</strong>
+                    <small title={item.grupo}>{item.grupo}</small>
+                  </button>
+                </article>
+              )
+            })}
+          </div>
+        ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
+      </section>
+    </main>
+  )
+}
+
+function MoviesScreen({ items, favorites, onToggleFavorite }) {
+  const [selectedMovie, setSelectedMovie] = useState(null)
+
+  return (
+    <CatalogScreen
+      title="MOVIES"
+      icon="🎬"
+      items={items}
+      favorites={favorites}
+      onToggleFavorite={onToggleFavorite}
+      onSelectItem={setSelectedMovie}
+      selectedItem={selectedMovie}
+      playerTitle={selectedMovie?.nome || ''}
+      playerDescription={selectedMovie ? 'Reproduzindo filme selecionado.' : 'Clique em um filme abaixo para iniciar a reprodução.'}
+      playerUrl={selectedMovie?.url || ''}
+    />
+  )
+}
+
+function SeriesScreen({ account, items, favorites, onToggleFavorite }) {
+  const [selectedSeries, setSelectedSeries] = useState(null)
+  const [seriesInfo, setSeriesInfo] = useState(null)
+  const [selectedEpisode, setSelectedEpisode] = useState(null)
+  const [loadingInfo, setLoadingInfo] = useState(false)
+  const [error, setError] = useState('')
+
+  async function selectSeries(series) {
+    setSelectedSeries(series)
+    setSelectedEpisode(null)
+    setSeriesInfo(null)
+    setError('')
+    setLoadingInfo(true)
+    try {
+      setSeriesInfo(await fetchSeriesInfo(account, series.streamId || series.id))
+    } catch (fetchError) {
+      setError(`Erro ao carregar episódios: ${fetchError.message}`)
+    } finally {
+      setLoadingInfo(false)
+    }
+  }
+
+  const episodes = useMemo(() => normalizeEpisodes(seriesInfo), [seriesInfo])
+  const episodeUrl = selectedEpisode
+    ? `${normalizeServer(account.server)}/series/${encodeURIComponent(account.username.trim())}/${encodeURIComponent(account.password.trim())}/${encodeURIComponent(selectedEpisode.id || selectedEpisode.episode_id)}.${getItemContainerExtension({ raw: selectedEpisode })}`
+    : ''
+
+  const description = loadingInfo
+    ? 'Carregando temporadas e episódios...'
+    : error || (selectedEpisode ? `Temporada ${selectedEpisode.seasonNumber || selectedEpisode.season || ''}` : selectedSeries ? 'Escolha um episódio abaixo.' : 'Clique em uma série para carregar episódios.')
+
+  return (
+    <>
+      <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodeUrl} />
+      {selectedSeries && (
+        <main className="placeholder-wrap series-episodes-wrap">
+          <section className="panel placeholder">
+            <p className="eyebrow">Episódios</p>
+            <h2>{selectedSeries.nome}</h2>
+            {loadingInfo && <p>Carregando episódios...</p>}
+            {error && <p className="status error">{error}</p>}
+            {!loadingInfo && !error && episodes.length === 0 && <p>Nenhum episódio encontrado para esta série.</p>}
+            {episodes.length > 0 && (
+              <ul className="media-preview" aria-label="Episódios da série">
+                {episodes.map((episode) => (
+                  <li key={`${episode.seasonNumber}-${episode.id || episode.episode_id}`}>
+                    <button className="episode-button" type="button" onClick={() => setSelectedEpisode(episode)}>
+                      <span>{episode.title || `Episódio ${episode.episode_num || episode.id}`}</span><small>T{episode.seasonNumber || episode.season || '?'} • {getItemContainerExtension({ raw: episode })}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </main>
+      )}
+    </>
+  )
+}
+
+function FavoritesScreen({ favorites, catalogItems, onToggleFavorite, onOpenSeries }) {
+  const catalogByKey = useMemo(() => catalogItems.reduce((accumulator, item) => ({ ...accumulator, [createItemKey(item)]: item }), {}), [catalogItems])
+  const favoriteItems = favorites.map((favorite) => catalogByKey[favorite.key] || favorite)
+  const [selectedItem, setSelectedItem] = useState(null)
+
+  function openFavorite(item) {
+    if (item.tipo === 'SERIES') {
+      onOpenSeries()
+      return
+    }
+    setSelectedItem(item)
+  }
+
+  return <CatalogScreen title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem?.url || ''} playerFallbackUrl={selectedItem?.fallbackUrl || ''} />
 }
 
 function Topbar({ screen, onNavigate }) {
@@ -381,7 +662,7 @@ function App() {
   const [account, setAccount] = useState(loadSavedAccount)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
-  const [favoriteChannels, setFavoriteChannels] = useState([])
+  const [favorites, setFavorites] = useState(loadSavedFavorites)
   const mediaManager = useMediaManager()
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
@@ -418,16 +699,20 @@ function App() {
     localStorage.removeItem(STORAGE_KEY)
     setAccount(EMPTY_ACCOUNT)
     mediaManager.clearCatalog()
-    setFavoriteChannels([])
+    setFavorites([])
+    localStorage.removeItem(FAVORITES_STORAGE_KEY)
     setStatus({ type: 'success', message: 'Dados removidos deste navegador.' })
   }
 
-  function toggleFavoriteChannel(channelKey) {
-    setFavoriteChannels((currentFavorites) => (
-      currentFavorites.includes(channelKey)
-        ? currentFavorites.filter((favoriteKey) => favoriteKey !== channelKey)
-        : [...currentFavorites, channelKey]
-    ))
+  function toggleFavoriteItem(item) {
+    setFavorites((currentFavorites) => {
+      const favorite = findFavorite(currentFavorites, item)
+      const nextFavorites = favorite
+        ? currentFavorites.filter((currentFavorite) => currentFavorite.key !== favorite.key)
+        : [...currentFavorites, createFavoriteSnapshot(item)]
+      saveFavorites(nextFavorites)
+      return nextFavorites
+    })
   }
 
   const currentItem = navigationItems.find((item) => item.id === screen) || navigationItems[0]
@@ -448,7 +733,13 @@ function App() {
       {screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} favorites={favoriteChannels} onToggleFavorite={toggleFavoriteChannel} />
+        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+      ) : screen === 'movies' ? (
+        <MoviesScreen items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+      ) : screen === 'series' ? (
+        <SeriesScreen account={account} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+      ) : screen === 'favorites' ? (
+        <FavoritesScreen favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
