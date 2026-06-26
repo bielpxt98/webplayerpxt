@@ -2,23 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 
 function maskDiagnosticUrl(url) {
-  if (!url) return ''
-
-  try {
-    const parsedUrl = new URL(url)
-    const parts = parsedUrl.pathname.split('/')
-    const credentialIndex = parts.findIndex((part) => ['live', 'movie', 'series'].includes(part.toLowerCase()))
-
-    if (credentialIndex >= 0 && parts[credentialIndex + 2]) {
-      parts[credentialIndex + 2] = '••••••'
-      parsedUrl.pathname = parts.join('/')
-      return parsedUrl.toString()
-    }
-  } catch {
-    return url.replace(/(\/(?:live|movie|series)\/[^/]+\/)([^/]+)(\/)/i, '$1••••••$3')
-  }
-
-  return url
+  return url || ''
 }
 
 function getErrorMessage(errorType) {

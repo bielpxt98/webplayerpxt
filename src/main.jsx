@@ -61,7 +61,11 @@ function buildXtreamLoginUrl({ server, username, password }) {
 
 function maskSensitiveUrl(url, password) {
   if (!url || !password) return url
-  return url.replaceAll(password.trim(), MASKED_PASSWORD).replaceAll(encodeURIComponent(password.trim()), MASKED_PASSWORD)
+  return url
+}
+
+function hasMaskedPasswordInUrl(url = '') {
+  return String(url).includes(MASKED_PASSWORD) || String(url).includes('%E2%80%A2')
 }
 
 function hasCompleteSessionCredentials(credentials) {
@@ -99,23 +103,7 @@ function getPlayableItemUrl(item, sessionCredentials) {
 }
 
 function maskChannelUrl(url) {
-  if (!url) return ''
-
-  try {
-    const parsedUrl = new URL(url)
-    const parts = parsedUrl.pathname.split('/')
-    const credentialIndex = parts.findIndex((part) => ['live', 'movie', 'series'].includes(part.toLowerCase()))
-
-    if (credentialIndex >= 0 && parts[credentialIndex + 2]) {
-      parts[credentialIndex + 2] = MASKED_PASSWORD
-      parsedUrl.pathname = parts.join('/')
-      return parsedUrl.toString()
-    }
-  } catch {
-    return url.replace(/(\/(?:live|movie|series)\/[^/]+\/)([^/]+)(\/)/i, `$1${MASKED_PASSWORD}$3`)
-  }
-
-  return url
+  return url || ''
 }
 
 function loadSavedAccount() {
@@ -336,16 +324,17 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, playbackFormat) : ''
   const activeFallbackUrl = playbackFormat === 'm3u8' && activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
+  const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl) || hasMaskedPasswordInUrl(activeFallbackUrl)
 
   function selectChannel(channel) {
     console.info('[LIVE TV] Selected channel playback URL', {
       name: channel.nome,
       streamId: channel.streamId || channel.id,
-      primaryUrl: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8')),
-      fallbackUrl: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts')),
+      primaryUrl: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8'),
+      fallbackUrl: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts'),
       availableFormats: {
-        m3u8: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8')),
-        ts: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts')),
+        m3u8: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8'),
+        ts: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts'),
       },
     })
     setSelectedChannel(channel)
@@ -411,15 +400,13 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
             <div className="live-url-diagnostic" aria-live="polite">
               <span>Diagnóstico temporário LIVE TV</span>
               <code>username: {sessionCredentials?.username ? 'OK' : 'ausente'}</code>
-              <code>password: {sessionCredentials?.password ? 'REAL (mascarada apenas na tela)' : 'ausente'}</code>
-              <code>raw password source: sessionCredentials</code>
-              <code>isMaskedPasswordUsed: {isSessionPasswordMasked ? 'true' : 'false'}</code>
-              {playbackCredentialsError && <code>erro: {playbackCredentialsError}</code>}
-              <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : playbackCredentialsError || 'selecione um canal para gerar a URL'}</code>
+              <code>password: {sessionCredentials?.password ? 'REAL (visível no diagnóstico temporário)' : 'ausente'}</code>
+              <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : 'selecione um canal para gerar a URL'}</code>
               <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
               <code>formato: /live/username/password/stream_id.{playbackFormat}</code>
               <code>URL: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
-              {playbackFormat === 'm3u8' && activeFallbackUrl && <code>fallback .ts: {maskChannelUrl(activeFallbackUrl)}</code>}
+              {playbackFormat === 'm3u8' && activeFallbackUrl && <code>fallback .ts: {activeFallbackUrl}</code>}
+              {hasMaskedLiveUrl && <code>erro: URL ainda está usando senha mascarada</code>}
             </div>
           </div>
         </div>
@@ -530,6 +517,15 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
             <p className="eyebrow">Player {title}</p>
             <h3>{playerTitle || `Selecione em ${title}`}</h3>
             <p>{playerDescription || 'Clique em um item abaixo para iniciar.'}</p>
+            {['MOVIES', 'SERIES'].includes(title) && (
+              <div className="live-url-diagnostic" aria-live="polite">
+                <span>Diagnóstico temporário {title}</span>
+                <code>stream_url: {playerUrl ? 'construída usando a senha real' : 'selecione um item para gerar a URL'}</code>
+                <code>URL: {playerUrl || 'selecione um item para gerar a URL'}</code>
+                {playerFallbackUrl && <code>fallback: {playerFallbackUrl}</code>}
+                {(hasMaskedPasswordInUrl(playerUrl) || hasMaskedPasswordInUrl(playerFallbackUrl)) && <code>erro: URL ainda está usando senha mascarada</code>}
+              </div>
+            )}
           </div>
         </div>
         <div className="section-heading">
@@ -707,10 +703,10 @@ function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onR
           <div className="live-url-diagnostic" aria-live="polite">
             <span>Diagnóstico de credenciais</span>
             <code>username: OK</code>
-            <code>password: REAL (mascarada apenas na tela)</code>
-            <code>raw password source: sessionCredentials</code>
-            <code>isMaskedPasswordUsed: false</code>
+            <code>password: REAL (visível no diagnóstico temporário)</code>
             <code>stream_url: construída usando a senha real</code>
+            <code>URL: {generatedUrl}</code>
+            {hasMaskedPasswordInUrl(generatedUrl) && <code>erro: URL ainda está usando senha mascarada</code>}
           </div>
         )}
 
