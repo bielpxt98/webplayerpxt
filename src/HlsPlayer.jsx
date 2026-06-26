@@ -136,7 +136,7 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
   return (
     <div className="hls-player" aria-live="polite">
       <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} />
-      {isLoading && <div className="player-overlay">Carregando canal...</div>}
+      {isLoading && <div className="player-overlay">Carregando conteúdo...</div>}
       {error && <div className="player-error" role="alert">{error}</div>}
     </div>
   )
