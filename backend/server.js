@@ -10,28 +10,39 @@ const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 10000);
 const defaultAllowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
+  'https://stupendous-bombolone-32f796.netlify.app',
 ];
 
-const allowedOrigins = (process.env.CORS_ORIGIN || '')
-  .split(',')
-  .map((origin) => origin.trim())
+const configuredAllowedOrigins = [
+  process.env.CORS_ORIGIN,
+  process.env.FRONTEND_ORIGIN,
+]
+  .filter(Boolean)
+  .flatMap((origins) => origins.split(','))
+  .map((origin) => origin.trim().replace(/\/+$/, ''))
   .filter(Boolean);
 
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins])];
+
+const corsOptions = {
+  origin(origin, callback) {
+    const normalizedOrigin = origin?.replace(/\/+$/, '');
+
+    if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error('Origin not allowed by CORS'));
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Accept'],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '32kb' }));
-app.use(
-  cors({
-    origin(origin, callback) {
-      const origins = [...defaultAllowedOrigins, ...allowedOrigins];
-
-      if (!origin || origins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error('Origin not allowed by CORS'));
-    },
-  }),
-);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: SERVICE_NAME });
