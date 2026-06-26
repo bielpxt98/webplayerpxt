@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
 import './styles.css'
 
@@ -94,6 +95,7 @@ function sortByName(items) {
 function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
+  const [selectedChannel, setSelectedChannel] = useState(null)
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -119,6 +121,9 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
   }, [activeGroup, channels, searchTerm])
 
   const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
+  const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
+    ? selectedChannel
+    : null
 
   if (!channels.length) {
     return (
@@ -159,6 +164,15 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
       </aside>
 
       <section className="panel channel-panel">
+        <div className="live-player-card">
+          <HlsPlayer url={activeChannel?.url || ''} title={activeChannel?.nome || 'Player LIVE TV'} />
+          <div className="live-player-info">
+            <p className="eyebrow">Player LIVE TV</p>
+            <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
+            <p>{activeChannel ? 'Reproduzindo o canal selecionado.' : 'Clique em um canal abaixo para iniciar a reprodução.'}</p>
+          </div>
+        </div>
+
         <div className="section-heading">
           <div>
             <p className="eyebrow">{activeGroup || 'Canais'}</p>
@@ -183,15 +197,17 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
               const isFavorite = favorites.includes(channelKey)
 
               return (
-                <article className="channel-card" key={channelKey}>
+                <article className={`channel-card ${activeChannel && createChannelKey(activeChannel) === channelKey ? 'active' : ''}`} key={channelKey}>
                   <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channelKey)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
                     ★
                   </button>
-                  <div className="channel-logo-wrap">
+                  <button className="channel-play-button" type="button" onClick={() => setSelectedChannel(channel)} aria-label={`Reproduzir ${channel.nome}`}>
+                    <div className="channel-logo-wrap">
                     {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
                   </div>
                   <strong title={channel.nome}>{channel.nome}</strong>
-                  {quality && <span className="quality-badge">{quality}</span>}
+                    {quality && <span className="quality-badge">{quality}</span>}
+                  </button>
                 </article>
               )
             })}
