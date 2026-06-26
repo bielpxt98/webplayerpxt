@@ -226,6 +226,15 @@ function sortByName(items) {
   return [...items].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }))
 }
 
+function normalizeSearchText(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function itemMatchesSearch(item, normalizedSearch) {
+  if (!normalizedSearch) return true
+  return `${item?.nome || ''} ${item?.grupo || ''}`.toLowerCase().includes(normalizedSearch)
+}
+
 function loadSavedFavorites() {
   try {
     const saved = JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY))
@@ -447,14 +456,16 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
   const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : ''
 
+  const normalizedSearch = normalizeSearchText(searchTerm)
+  const isSearching = Boolean(normalizedSearch)
+
   const filteredChannels = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase()
     return channels.filter((channel) => {
-      const matchesGroup = activeGroup && channel.grupo === activeGroup
-      const matchesSearch = !normalizedSearch || `${channel.nome} ${channel.grupo}`.toLowerCase().includes(normalizedSearch)
+      const matchesGroup = isSearching || (activeGroup && channel.grupo === activeGroup)
+      const matchesSearch = itemMatchesSearch(channel, normalizedSearch)
       return matchesGroup && matchesSearch
     })
-  }, [activeGroup, channels, searchTerm])
+  }, [activeGroup, channels, isSearching, normalizedSearch])
 
   const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
   const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel)) ? selectedChannel : null
@@ -519,22 +530,36 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     return <main className="placeholder-wrap"><section className="panel placeholder"><div className="placeholder-icon">📺</div><p className="eyebrow">LIVE TV</p><h2>Nenhuma lista carregada</h2><p>Carregando catálogo...</p><button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></section></main>
   }
 
-  if (activeChannel) {
+  const liveSearchControl = (
+    <label className="search-label">
+      <span>Buscar canal</span>
+      <input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Nome ou categoria" />
+    </label>
+  )
+
+  const liveResultsGrid = (
+    <>
+      <div className="channel-count-row"><span>{filteredChannels.length} canais encontrados</span><span>{favorites.length} favoritos</span></div>
+      {filteredChannels.length > 0 ? <div className="channel-grid" aria-label="Resultados globais de LIVE TV">{filteredChannels.map((channel) => { const channelKey = createChannelKey(channel); const quality = getChannelQuality(channel); const isFavorite = Boolean(findFavorite(favorites, channel)); return <article className="channel-card" key={channelKey} onClick={(event) => selectChannel(channel, event)} aria-label={`Canal ${channel.nome}`}><button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>★</button><button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}><div className="channel-logo-wrap">{channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}</div><strong title={channel.nome}>{channel.nome}</strong><small title={channel.grupo}>{channel.grupo}</small>{quality && <span className="quality-badge">{quality}</span>}</button></article> })}</div> : <p className="empty">Nenhum canal encontrado com a busca atual.</p>}
+    </>
+  )
+
+  if (activeChannel && !isSearching) {
     return (
       <main className="single-screen" aria-label={`Player do canal ${activeChannel.nome}`} ref={playerPanelRef}>
         <section className="panel channel-panel player-only-panel">
-          <div className="section-heading compact"><div><p className="eyebrow">Player LIVE TV</p><h2>{activeChannel.nome}</h2></div><button className="secondary-button" type="button" onClick={() => { setSelectedChannel(null); setResolvedPlaybackUrl('') }}>VOLTAR</button></div>
+          <div className="section-heading compact"><div><p className="eyebrow">Player LIVE TV</p><h2>{activeChannel.nome}</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={() => { setSelectedChannel(null); setResolvedPlaybackUrl('') }}>VOLTAR</button></div></div>
           <div className="live-player-card player-only-card"><HlsPlayer url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''} fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''} contentType={playbackDebug.contentType} title={activeChannel.nome} onPlaybackUrlChange={updatePlaybackDebug} /><div className="live-player-info"><p className="eyebrow">Ao vivo</p><h3>{activeChannel.nome}</h3><p>Reproduzindo o canal selecionado.</p></div></div>
         </section>
       </main>
     )
   }
 
-  if (!activeGroup) {
+  if (!activeGroup && !isSearching) {
     return (
       <main className="section-home" aria-label="Categorias de LIVE TV">
         <section className="panel section-home-panel">
-          <div className="section-heading compact"><div><p className="eyebrow">Categorias</p><h2>LIVE TV</h2></div><button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div>
+          <div className="section-heading compact"><div><p className="eyebrow">Categorias</p><h2>LIVE TV</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div></div>
           <div className="category-grid" role="list" aria-label="Categorias de TV">{groups.map((group) => <button key={group.name} type="button" className="category-card" onClick={() => setSelectedGroup(group.name)}><span>📺</span><strong>{group.name}</strong><small>{group.count} canais</small></button>)}</div>
         </section>
       </main>
@@ -542,11 +567,10 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   }
 
   return (
-    <main className="catalog-detail" aria-label={`Canais de ${activeGroup}`}>
+    <main className="catalog-detail" aria-label={isSearching ? 'Busca global de LIVE TV' : `Canais de ${activeGroup}`}>
       <section className="panel channel-panel">
-        <div className="section-heading"><div><p className="eyebrow">{activeGroup}</p><h2>{activeGroupTotal} canais na categoria</h2></div><div className="detail-actions"><button className="secondary-button" type="button" onClick={() => { setSelectedGroup(''); setSearchTerm('') }}>VOLTAR</button><label className="search-label"><span>Buscar canal</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" /></label></div></div>
-        <div className="channel-count-row"><span>{filteredChannels.length} canais encontrados</span><span>{favorites.length} favoritos</span></div>
-        {filteredChannels.length > 0 ? <div className="channel-grid" aria-label={`Canais de ${activeGroup}`}>{filteredChannels.map((channel) => { const channelKey = createChannelKey(channel); const quality = getChannelQuality(channel); const isFavorite = Boolean(findFavorite(favorites, channel)); return <article className="channel-card" key={channelKey} onClick={(event) => selectChannel(channel, event)} aria-label={`Canal ${channel.nome}`}><button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>★</button><button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}><div className="channel-logo-wrap">{channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}</div><strong title={channel.nome}>{channel.nome}</strong>{quality && <span className="quality-badge">{quality}</span>}</button></article> })}</div> : <p className="empty">Nenhum canal encontrado com a busca atual.</p>}
+        <div className="section-heading"><div><p className="eyebrow">{isSearching ? 'Busca global' : activeGroup}</p><h2>{isSearching ? 'Resultados em todos os canais' : `${activeGroupTotal} canais na categoria`}</h2></div><div className="detail-actions"><button className="secondary-button" type="button" onClick={() => { setSelectedGroup(''); setSearchTerm('') }}>VOLTAR</button>{liveSearchControl}</div></div>
+        {liveResultsGrid}
       </section>
     </main>
   )
@@ -566,14 +590,16 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [items])
 
+  const normalizedSearch = normalizeSearchText(searchTerm)
+  const isSearching = Boolean(normalizedSearch)
+
   const filteredItems = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase()
     return items.filter((item) => {
-      const matchesGroup = !selectedGroup || item.grupo === selectedGroup
-      const matchesSearch = !normalizedSearch || `${item.nome} ${item.grupo}`.toLowerCase().includes(normalizedSearch)
+      const matchesGroup = isSearching || !selectedGroup || item.grupo === selectedGroup
+      const matchesSearch = itemMatchesSearch(item, normalizedSearch)
       return matchesGroup && matchesSearch
     })
-  }, [items, searchTerm, selectedGroup])
+  }, [isSearching, items, normalizedSearch, selectedGroup])
 
 
   useEffect(() => {
@@ -600,13 +626,42 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     )
   }
 
-  if ((playerUrl || playerFallbackUrl) && selectedItem) {
+  const searchControl = (
+    <label className="search-label"><span>Buscar</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" /></label>
+  )
+
+  const itemsGrid = (
+    <>
+      <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span></div>
+      {filteredItems.length > 0 ? (
+        <div className="channel-grid media-card-grid" aria-label={isSearching ? `Resultados globais de ${title}` : `Itens de ${selectedGroup}`}>
+          {filteredItems.map((item) => {
+            const itemKey = createItemKey(item)
+            const isFavorite = Boolean(findFavorite(favorites, item))
+            const poster = getItemPoster(item)
+            return (
+              <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
+                <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
+                <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
+                  <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
+                  <strong title={item.nome}>{item.nome}</strong>
+                  <small title={item.grupo}>{item.grupo}</small>
+                </button>
+              </article>
+            )
+          })}
+        </div>
+      ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
+    </>
+  )
+
+  if ((playerUrl || playerFallbackUrl) && selectedItem && !isSearching) {
     return (
       <main className="single-screen" aria-label={`Player de ${playerTitle || title}`} ref={playerPanelRef}>
         <section className="panel channel-panel player-only-panel">
           <div className="section-heading compact">
             <div><p className="eyebrow">Player {title}</p><h2>{playerTitle || title}</h2></div>
-            <button className="secondary-button" type="button" onClick={onPlayerBack}>VOLTAR</button>
+            <div className="detail-actions">{searchControl}<button className="secondary-button" type="button" onClick={onPlayerBack}>VOLTAR</button></div>
           </div>
           <div className="live-player-card player-only-card">
             <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
@@ -617,10 +672,11 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     )
   }
 
-  if (selectedItem && detailContent) {
+  if (selectedItem && detailContent && !isSearching) {
     return (
       <main className="single-screen" aria-label={`Detalhes de ${selectedItem.nome}`}>
         <section className="panel channel-panel">
+          <div className="section-heading compact"><div><p className="eyebrow">Busca global</p><h2>{title}</h2></div>{searchControl}</div>
           {detailContent}
           {afterContent}
         </section>
@@ -628,7 +684,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     )
   }
 
-  if (!selectedGroup) {
+  if (!selectedGroup && !isSearching) {
     return (
       <main className="section-home" aria-label={`Categorias de ${title}`}>
         <section className="panel section-home-panel">
@@ -637,7 +693,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
               <p className="eyebrow">Categorias</p>
               <h2>{title}</h2>
             </div>
-            <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+            <div className="detail-actions">{searchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div>
           </div>
           <div className="category-grid" role="list" aria-label={`Categorias de ${title}`}>
             {groups.map((group) => (
@@ -654,35 +710,16 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
   }
 
   return (
-    <main className="catalog-detail" aria-label={`Itens de ${selectedGroup}`}>
+    <main className="catalog-detail" aria-label={isSearching ? `Busca global de ${title}` : `Itens de ${selectedGroup}`}>
       <section className="panel channel-panel">
         <div className="section-heading">
-          <div><p className="eyebrow">{title}</p><h2>{selectedGroup}</h2></div>
+          <div><p className="eyebrow">{isSearching ? 'Busca global' : title}</p><h2>{isSearching ? `Resultados em ${title}` : selectedGroup}</h2></div>
           <div className="detail-actions">
             <button className="secondary-button" type="button" onClick={goBackToCategories}>VOLTAR</button>
-            <label className="search-label"><span>Buscar</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome" /></label>
+            {searchControl}
           </div>
         </div>
-        <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span></div>
-        {filteredItems.length > 0 ? (
-          <div className="channel-grid media-card-grid" aria-label={`Itens de ${selectedGroup}`}>
-            {filteredItems.map((item) => {
-              const itemKey = createItemKey(item)
-              const isFavorite = Boolean(findFavorite(favorites, item))
-              const poster = getItemPoster(item)
-              return (
-                <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
-                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
-                  <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
-                    <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
-                    <strong title={item.nome}>{item.nome}</strong>
-                    <small title={item.grupo}>{item.grupo}</small>
-                  </button>
-                </article>
-              )
-            })}
-          </div>
-        ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
+        {itemsGrid}
       </section>
     </main>
   )
