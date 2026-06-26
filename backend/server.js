@@ -20,19 +20,21 @@ const defaultAllowedOrigins = [
 ];
 
 const configuredAllowedOrigins = [
-  process.env.CORS_ORIGIN,
   process.env.FRONTEND_ORIGIN,
+  process.env.CORS_ORIGIN,
+  process.env.RENDER_EXTERNAL_URL,
+  getRenderServiceOrigin(),
 ]
   .filter(Boolean)
   .flatMap((origins) => origins.split(','))
-  .map((origin) => origin.trim().replace(/\/+$/, ''))
+  .map(normalizeOrigin)
   .filter(Boolean);
 
 const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins])];
 
 const corsOptions = {
   origin(origin, callback) {
-    const normalizedOrigin = origin?.replace(/\/+$/, '');
+    const normalizedOrigin = normalizeOrigin(origin);
 
     if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin) || isLocalOrigin(normalizedOrigin)) {
       callback(null, true);
@@ -168,6 +170,20 @@ function resolveFrontendDistPath() {
   }
 
   return distPath;
+}
+
+function normalizeOrigin(origin) {
+  return origin?.trim().replace(/\/+$/, '');
+}
+
+function getRenderServiceOrigin() {
+  const serviceName = process.env.RENDER_SERVICE_NAME;
+
+  if (!serviceName) {
+    return null;
+  }
+
+  return `https://${serviceName}.onrender.com`;
 }
 
 function isLocalOrigin(origin) {
