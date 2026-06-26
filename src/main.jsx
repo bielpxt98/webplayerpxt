@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
@@ -9,6 +9,47 @@ const FAVORITES_STORAGE_KEY = 'authorized-iptv-player-favorites'
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
 const MASKED_PASSWORD = '••••••'
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
+
+const PLAYBACK_CACHE_TTL_MS = 30 * 60 * 1000
+const playbackUrlCache = new Map()
+
+function nowMs() {
+  return Date.now()
+}
+
+function getMediaTypeKey(item) {
+  if (item?.tipo === 'LIVE TV') return 'live'
+  if (item?.tipo === 'MOVIES') return 'movie'
+  if (item?.tipo === 'SERIES') return 'series'
+  return String(item?.tipo || 'item').toLowerCase()
+}
+
+function getPlaybackCacheKey({ type, streamId, originalUrl }) {
+  return `${type || 'item'}:${streamId || 'no-stream'}:${originalUrl || ''}`
+}
+
+function getCachedPlaybackUrl(cacheKey) {
+  const cached = playbackUrlCache.get(cacheKey)
+  if (!cached) return null
+  if (nowMs() - cached.resolvedAt > PLAYBACK_CACHE_TTL_MS) {
+    playbackUrlCache.delete(cacheKey)
+    return null
+  }
+  return cached
+}
+
+function setCachedPlaybackUrl(cacheKey, value) {
+  playbackUrlCache.set(cacheKey, { ...value, resolvedAt: nowMs() })
+}
+
+function clearCachedPlaybackUrl(cacheKey) {
+  if (cacheKey) playbackUrlCache.delete(cacheKey)
+}
+
+function proxyExternalAssetUrl(url) {
+  if (!url || !/^https?:\/\//i.test(url)) return url || ''
+  return buildStreamProxyUrl(url)
+}
 
 
 const navigationItems = [
@@ -291,6 +332,88 @@ function normalizeEpisodes(seriesInfo) {
 }
 
 
+
+function useResolvedPlaybackUrl({ item, originalUrl, fallbackUrl = '' }) {
+  const [state, setState] = useState({ playbackUrl: '', fallbackPlaybackUrl: '', debug: {}, resolving: false })
+  const requestIdRef = useRef(0)
+  const itemStreamId = item?.streamId || item?.id || ''
+  const type = getMediaTypeKey(item)
+  const cacheKey = item && originalUrl ? getPlaybackCacheKey({ type, streamId: itemStreamId, originalUrl }) : ''
+
+  useEffect(() => {
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
+
+    if (!item || !originalUrl) {
+      setState({ playbackUrl: '', fallbackPlaybackUrl: '', debug: {}, resolving: false })
+      return undefined
+    }
+
+    const selectedAt = nowMs()
+    const cached = getCachedPlaybackUrl(cacheKey)
+    const initialPlaybackUrl = cached?.finalUrl || originalUrl
+    setState({
+      playbackUrl: initialPlaybackUrl,
+      fallbackPlaybackUrl: fallbackUrl,
+      resolving: !cached,
+      debug: {
+        mixedContentFound: /^http:\/\//i.test(originalUrl) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não',
+        originalUrl,
+        finalUrl: cached?.finalUrl || '',
+        proxyUrl: buildStreamProxyUrl(initialPlaybackUrl),
+        cacheUsed: cached ? 'sim' : 'não',
+        resolveTimeMs: cached ? 0 : '',
+        playerStartTimeMs: 0,
+        statusCode: cached?.statusCode ?? '',
+        contentType: cached?.contentType || '',
+        redirected: cached ? Boolean(cached.redirected) : '',
+      },
+    })
+
+    if (cached) return undefined
+
+    let cancelled = false
+    async function resolveInBackground() {
+      const resolveStartedAt = nowMs()
+      try {
+        const resolvedStream = await resolvePlaybackUrl(originalUrl)
+        if (cancelled || requestIdRef.current !== requestId) return
+        const finalUrl = resolvedStream.finalUrl || originalUrl
+        const canUseResolvedUrl = finalUrl && Number(resolvedStream.statusCode) === 200
+        const playbackUrl = canUseResolvedUrl ? finalUrl : originalUrl
+        setCachedPlaybackUrl(cacheKey, { type, streamId: itemStreamId, originalUrl, finalUrl: playbackUrl, statusCode: resolvedStream.statusCode ?? '', contentType: resolvedStream.contentType || '', redirected: Boolean(resolvedStream.redirected) })
+        setState((current) => ({
+          ...current,
+          playbackUrl,
+          resolving: false,
+          debug: {
+            ...current.debug,
+            mixedContentFound: /^http:\/\//i.test(originalUrl) || /^http:\/\//i.test(finalUrl) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não',
+            finalUrl,
+            proxyUrl: buildStreamProxyUrl(playbackUrl),
+            cacheUsed: 'não',
+            resolveTimeMs: nowMs() - resolveStartedAt,
+            playerStartTimeMs: nowMs() - selectedAt,
+            statusCode: resolvedStream.statusCode ?? '',
+            contentType: resolvedStream.contentType || '',
+            redirected: Boolean(resolvedStream.redirected),
+          },
+        }))
+      } catch (error) {
+        if (cancelled || requestIdRef.current !== requestId) return
+        setState((current) => ({ ...current, resolving: false, debug: { ...current.debug, errorSource: 'resolve-stream', errorDetail: error.message } }))
+      }
+    }
+
+    resolveInBackground()
+    return () => { cancelled = true }
+  }, [cacheKey, fallbackUrl, item, itemStreamId, originalUrl, type])
+
+  const clearCache = useCallback(() => clearCachedPlaybackUrl(cacheKey), [cacheKey])
+
+  return { ...state, clearCache }
+}
+
 async function resolvePlaybackUrl(originalUrl) {
   if (!originalUrl) return null
 
@@ -351,9 +474,14 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
   const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl)
+  const activeCacheKey = activeChannel ? getPlaybackCacheKey({ type: 'live', streamId: activeStreamId, originalUrl: activePlaybackUrl }) : ''
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
-  }, [])
+    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) {
+      clearCachedPlaybackUrl(activeCacheKey)
+      if (activeChannel) selectChannel(activeChannel)
+    }
+  }, [activeCacheKey, activeChannel])
 
   async function selectChannel(channel, event) {
     event?.preventDefault()
@@ -370,19 +498,26 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
       url: m3u8Url,
       action: 'play-immediately-and-resolve-in-parallel',
     })
-    setSelectedChannel(channel)
-    setResolvedPlaybackUrl('')
-    setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '', redirected: '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '' })
+    const cacheKey = getPlaybackCacheKey({ type: 'live', streamId, originalUrl: m3u8Url })
+    const cachedStream = getCachedPlaybackUrl(cacheKey)
+    const selectedAt = nowMs()
+    const initialProxyUrl = buildStreamProxyUrl(m3u8Url)
 
-    if (!m3u8Url) return
+    setSelectedChannel(channel)
+    setResolvedPlaybackUrl(cachedStream?.finalUrl || '')
+    setPlaybackDebug({ url: cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : initialProxyUrl, format: 'm3u8', originalUrl: m3u8Url, finalUrl: cachedStream?.finalUrl || '', statusCode: cachedStream?.statusCode ?? '', contentType: cachedStream?.contentType || '', redirected: cachedStream ? Boolean(cachedStream.redirected) : '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '', mixedContentFound: /^http:\/\//i.test(m3u8Url) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : initialProxyUrl, cacheUsed: cachedStream ? 'sim' : 'não', resolveTimeMs: cachedStream ? 0 : '', playerStartTimeMs: 0 })
+
+    if (!m3u8Url || cachedStream) return
 
     try {
+      const resolveStartedAt = nowMs()
       const resolvedStream = await resolvePlaybackUrl(m3u8Url)
       if (resolveRequestIdRef.current !== resolveRequestId) return
       const canUseResolvedUrl = resolvedStream.finalUrl && Number(resolvedStream.statusCode) === 200
       const finalUrl = resolvedStream.finalUrl || m3u8Url
       const playbackUrl = canUseResolvedUrl ? finalUrl : m3u8Url
       const proxiedPlaybackUrl = buildStreamProxyUrl(playbackUrl)
+      setCachedPlaybackUrl(cacheKey, { type: 'live', streamId, originalUrl: m3u8Url, finalUrl: playbackUrl, statusCode: resolvedStream.statusCode ?? '', contentType: resolvedStream.contentType || '', redirected: Boolean(resolvedStream.redirected) })
       setResolvedPlaybackUrl(playbackUrl)
       setPlaybackDebug({
         url: proxiedPlaybackUrl,
@@ -392,6 +527,11 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
         statusCode: resolvedStream.statusCode ?? '',
         contentType: resolvedStream.contentType || '',
         redirected: Boolean(resolvedStream.redirected),
+        mixedContentFound: /^http:\/\//i.test(m3u8Url) || /^http:\/\//i.test(finalUrl) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não',
+        proxyUrl: proxiedPlaybackUrl,
+        cacheUsed: 'não',
+        resolveTimeMs: nowMs() - resolveStartedAt,
+        playerStartTimeMs: nowMs() - selectedAt,
       })
     } catch (error) {
       if (resolveRequestIdRef.current !== resolveRequestId) return
@@ -464,8 +604,13 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <code>formato solicitado: /live/username/password/stream_id.m3u8</code>
               <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL real .m3u8: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <code>mixed content encontrado: {playbackDebug.mixedContentFound || 'não'}</code>
               <code>URL original: {playbackDebug.originalUrl || activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL final resolvida: {playbackDebug.finalUrl || 'aguardando redirect/token'}</code>
+              <code>URL proxy usada: {playbackDebug.proxyUrl || (playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : 'aguardando URL')}</code>
+              <code>cache usado: {playbackDebug.cacheUsed || 'não'}</code>
+              <code>tempo para resolver URL: {playbackDebug.resolveTimeMs === '' || playbackDebug.resolveTimeMs === undefined ? 'aguardando' : `${playbackDebug.resolveTimeMs}ms`}</code>
+              <code>tempo até iniciar player: {playbackDebug.playerStartTimeMs === '' || playbackDebug.playerStartTimeMs === undefined ? 'aguardando' : `${playbackDebug.playerStartTimeMs}ms`}</code>
               <code>statusCode: {playbackDebug.statusCode || 'aguardando resposta'}</code>
               <code>redirected: {playbackDebug.redirected === '' ? 'aguardando resposta' : String(playbackDebug.redirected)}</code>
               <code>contentType: {playbackDebug.contentType || 'aguardando resposta'}</code>
@@ -519,7 +664,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
                   </button>
                   <button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}>
                     <div className="channel-logo-wrap">
-                      {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
+                      {channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
                     </div>
                     <strong title={channel.nome}>{channel.nome}</strong>
                     {quality && <span className="quality-badge">{quality}</span>}
@@ -536,7 +681,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   )
 }
 
-function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl }) {
+function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, playbackDebug = {}, onPlaybackUrlChange, isResolving = false }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
 
@@ -590,7 +735,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
+          <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} onPlaybackUrlChange={onPlaybackUrlChange} />
           <div className="live-player-info">
             <p className="eyebrow">Player {title}</p>
             <h3>{playerTitle || `Selecione em ${title}`}</h3>
@@ -599,7 +744,14 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
               <div className="live-url-diagnostic" aria-live="polite">
                 <span>Diagnóstico temporário {title}</span>
                 <code>stream_url: {playerUrl ? 'construída usando a senha real' : 'selecione um item para gerar a URL'}</code>
-                <code>URL: {playerUrl || 'selecione um item para gerar a URL'}</code>
+                <code>loading do player: {isResolving ? 'resolvendo token em paralelo' : 'pronto'}</code>
+                <code>mixed content encontrado: {playbackDebug.mixedContentFound || 'não'}</code>
+                <code>URL original: {playbackDebug.originalUrl || playerUrl || 'selecione um item para gerar a URL'}</code>
+                <code>URL final: {playbackDebug.finalUrl || 'aguardando redirect/token'}</code>
+                <code>URL proxy usada: {playbackDebug.proxyUrl || (playerUrl ? buildStreamProxyUrl(playerUrl) : 'selecione um item para gerar a URL')}</code>
+                <code>cache usado: {playbackDebug.cacheUsed || 'não'}</code>
+                <code>tempo para resolver URL: {playbackDebug.resolveTimeMs === '' || playbackDebug.resolveTimeMs === undefined ? 'aguardando' : `${playbackDebug.resolveTimeMs}ms`}</code>
+                <code>tempo até iniciar player: {playbackDebug.playerStartTimeMs === '' || playbackDebug.playerStartTimeMs === undefined ? 'aguardando' : `${playbackDebug.playerStartTimeMs}ms`}</code>
                 {playerFallbackUrl && <code>fallback: {playerFallbackUrl}</code>}
                 {(hasMaskedPasswordInUrl(playerUrl) || hasMaskedPasswordInUrl(playerFallbackUrl)) && <code>erro: URL ainda está usando senha mascarada</code>}
               </div>
@@ -621,7 +773,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
                 <article className={`channel-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
                   <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
                   <button className="channel-play-button" type="button" onClick={() => onSelectItem(item)} aria-label={`Abrir ${item.nome}`}>
-                    <div className="channel-logo-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
+                    <div className="channel-logo-wrap">{poster ? <img src={proxyExternalAssetUrl(poster)} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
                     <strong title={item.nome}>{item.nome}</strong>
                     <small title={item.grupo}>{item.grupo}</small>
                   </button>
@@ -637,6 +789,11 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
 
 function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
+  const originalMovieUrl = selectedMovie ? getPlayableItemUrl(selectedMovie, sessionCredentials) : ''
+  const moviePlayback = useResolvedPlaybackUrl({ item: selectedMovie, originalUrl: originalMovieUrl })
+  const handleMoviePlaybackDebug = useCallback((debugInfo) => {
+    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) moviePlayback.clearCache()
+  }, [moviePlayback.clearCache])
 
   return (
     <CatalogScreen
@@ -649,7 +806,10 @@ function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite }
       selectedItem={selectedMovie}
       playerTitle={selectedMovie?.nome || ''}
       playerDescription={selectedMovie ? 'Reproduzindo filme selecionado.' : 'Clique em um filme abaixo para iniciar a reprodução.'}
-      playerUrl={selectedMovie ? getPlayableItemUrl(selectedMovie, sessionCredentials) : ''}
+      playerUrl={moviePlayback.playbackUrl}
+      playbackDebug={moviePlayback.debug}
+      onPlaybackUrlChange={handleMoviePlaybackDebug}
+      isResolving={moviePlayback.resolving}
     />
   )
 }
@@ -680,6 +840,11 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite }
   const episodeUrl = selectedEpisode
     ? buildXtreamPlaybackUrl(sessionCredentials, 'series', selectedEpisode.id || selectedEpisode.episode_id, getItemContainerExtension({ raw: selectedEpisode }))
     : ''
+  const episodePlaybackItem = useMemo(() => (selectedEpisode ? { ...selectedEpisode, tipo: 'SERIES', streamId: selectedEpisode.id || selectedEpisode.episode_id } : null), [selectedEpisode])
+  const episodePlayback = useResolvedPlaybackUrl({ item: episodePlaybackItem, originalUrl: episodeUrl })
+  const handleEpisodePlaybackDebug = useCallback((debugInfo) => {
+    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) episodePlayback.clearCache()
+  }, [episodePlayback.clearCache])
 
   const description = loadingInfo
     ? 'Carregando temporadas e episódios...'
@@ -687,7 +852,7 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite }
 
   return (
     <>
-      <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodeUrl} />
+      <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} />
       {selectedSeries && (
         <main className="placeholder-wrap series-episodes-wrap">
           <section className="panel placeholder">
@@ -718,6 +883,12 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
   const catalogByKey = useMemo(() => catalogItems.reduce((accumulator, item) => ({ ...accumulator, [createItemKey(item)]: item }), {}), [catalogItems])
   const favoriteItems = favorites.map((favorite) => catalogByKey[favorite.key] || favorite)
   const [selectedItem, setSelectedItem] = useState(null)
+  const originalFavoriteUrl = selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''
+  const originalFavoriteFallbackUrl = selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''
+  const favoritePlayback = useResolvedPlaybackUrl({ item: selectedItem, originalUrl: originalFavoriteUrl, fallbackUrl: originalFavoriteFallbackUrl })
+  const handleFavoritePlaybackDebug = useCallback((debugInfo) => {
+    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) favoritePlayback.clearCache()
+  }, [favoritePlayback.clearCache])
 
   function openFavorite(item) {
     if (item.tipo === 'SERIES') {
@@ -727,7 +898,7 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
     setSelectedItem(item)
   }
 
-  return <CatalogScreen title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} />
+  return <CatalogScreen title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={favoritePlayback.playbackUrl} playerFallbackUrl={favoritePlayback.fallbackPlaybackUrl} playbackDebug={favoritePlayback.debug} onPlaybackUrlChange={handleFavoritePlaybackDebug} isResolving={favoritePlayback.resolving} />
 }
 
 function Topbar({ screen, onNavigate }) {
