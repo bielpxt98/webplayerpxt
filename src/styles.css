@@ -532,6 +532,7 @@ input:focus {
   align-content: center;
   justify-items: center;
   gap: 10px;
+  cursor: pointer;
 }
 
 .channel-logo-wrap {
@@ -558,6 +559,7 @@ input:focus {
 
 .favorite-button {
   position: absolute;
+  z-index: 2;
   top: 10px;
   right: 10px;
   width: 34px;
@@ -712,10 +714,13 @@ input:focus {
 }
 
 .channel-play-button {
+  position: absolute;
+  inset: 0;
   display: grid;
   width: 100%;
+  min-height: 100%;
   border: 0;
-  padding: 0;
+  padding: 18px 14px;
   color: inherit;
   background: transparent;
   align-content: center;
