@@ -74,6 +74,10 @@ function createXtreamItem({ item, index, type, groupName, url, fallbackUrl = '' 
     logo,
     url,
     fallbackUrl,
+    liveUrls: type === MEDIA_TYPES.LIVE ? {
+      m3u8: url,
+      ts: fallbackUrl,
+    } : undefined,
     streamId,
     tipo: type,
     epg: getByKeys(item, ['epg_channel_id']),
