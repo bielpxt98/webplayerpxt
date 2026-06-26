@@ -799,30 +799,6 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
     ? 'Carregando temporadas e episódios...'
     : error || (selectedEpisode ? `Temporada ${selectedEpisode.seasonNumber || selectedEpisode.season || ''}` : selectedSeries ? 'Escolha um episódio abaixo.' : 'Clique em uma série para carregar episódios.')
 
-  return (
-    <>
-      <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} />
-      {selectedSeries && (
-        <main className="placeholder-wrap series-episodes-wrap">
-          <section className="panel placeholder">
-            <p className="eyebrow">Episódios</p>
-            <h2>{selectedSeries.nome}</h2>
-            {loadingInfo && <p>Carregando episódios...</p>}
-            {error && <p className="status error">{error}</p>}
-            {!loadingInfo && !error && episodes.length === 0 && <p>Nenhum episódio encontrado para esta série.</p>}
-            {episodes.length > 0 && (
-              <ul className="media-preview" aria-label="Episódios da série">
-                {episodes.map((episode) => (
-                  <li key={`${episode.seasonNumber}-${episode.id || episode.episode_id}`}>
-                    <button className="episode-button" type="button" onClick={() => setSelectedEpisode(episode)}>
-                      <span>{episode.title || `Episódio ${episode.episode_num || episode.id}`}</span><small>T{episode.seasonNumber || episode.season || '?'} • {getItemContainerExtension({ raw: episode })}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </main>
   const episodesPanel = selectedSeries ? (
     <section className="series-episodes-panel" aria-label={`Episódios de ${selectedSeries.nome}`}>
       <div className="section-heading compact">
@@ -850,7 +826,7 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
   ) : null
 
   return (
-    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodeUrl} afterContent={episodesPanel} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
+    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} afterContent={episodesPanel} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
   )
 }
 
