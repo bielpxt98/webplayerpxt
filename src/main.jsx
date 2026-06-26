@@ -94,6 +94,20 @@ async function validateXtreamAccount(account) {
   return response.json()
 }
 
+function getCatalogPayload(responseData) {
+  return responseData?.catalog && typeof responseData.catalog === 'object'
+    ? responseData.catalog
+    : responseData
+}
+
+function getCatalogCounts(catalog) {
+  return {
+    live: Array.isArray(catalog?.liveStreams) ? catalog.liveStreams.length : 0,
+    movies: Array.isArray(catalog?.vodStreams) ? catalog.vodStreams.length : 0,
+    series: Array.isArray(catalog?.series) ? catalog.series.length : 0,
+  }
+}
+
 
 function getChannelQuality(channel) {
   const searchable = `${channel.nome || ''} ${channel.grupo || ''} ${channel.url || ''}`.toUpperCase()
@@ -351,8 +365,18 @@ function App() {
 
     try {
       saveAccount(account)
-      await validateXtreamAccount(account)
-      setStatus({ type: 'success', message: `${successMessage}.` })
+      const responseData = await validateXtreamAccount(account)
+      const catalogPayload = getCatalogPayload(responseData)
+      const loadedCatalog = mediaManager.loadXtreamCatalog(catalogPayload, {
+        server: normalizeServer(account.server),
+        username: account.username,
+        password: account.password,
+      })
+      const counts = getCatalogCounts(catalogPayload)
+      setStatus({
+        type: 'success',
+        message: `${successMessage}. Catálogo carregado: ${counts.live || loadedCatalog.live.length} canais, ${counts.movies || loadedCatalog.movies.length} filmes e ${counts.series || loadedCatalog.series.length} séries.`,
+      })
     } catch (error) {
       setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
     } finally {
