@@ -360,7 +360,7 @@ function App() {
       {screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Lista atualizada com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.all} favorites={favoriteChannels} onToggleFavorite={toggleFavoriteChannel} />
+        <LiveTvScreen channels={mediaManager.live} favorites={favoriteChannels} onToggleFavorite={toggleFavoriteChannel} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
