@@ -6,6 +6,8 @@ import './styles.css'
 
 const STORAGE_KEY = 'authorized-iptv-player-account'
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
+const BACKEND_BASE_URL = 'https://webplayerpxt.onrender.com'
+
 
 const navigationItems = [
   { id: 'account', title: 'ACCOUNT', subtitle: 'Login e conexão', icon: '👤' },
@@ -63,10 +65,10 @@ function saveAccount(account) {
   localStorage.removeItem(STORAGE_KEY)
 }
 
-async function fetchXtreamCatalog(account) {
+async function validateXtreamAccount(account) {
   if (!buildXtreamLoginUrl(account)) throw new Error('Preencha servidor, usuário e senha.')
 
-  const response = await fetch('/.netlify/functions/playlist', {
+  const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -349,13 +351,8 @@ function App() {
 
     try {
       saveAccount(account)
-      const xtreamCatalog = await fetchXtreamCatalog(account)
-      const playlist = mediaManager.loadXtreamCatalog(xtreamCatalog, {
-        server: normalizeServer(account.server),
-        username: account.username,
-        password: account.password,
-      })
-      setStatus({ type: 'success', message: `${successMessage}. ${playlist.all.length} itens organizados.` })
+      await validateXtreamAccount(account)
+      setStatus({ type: 'success', message: `${successMessage}.` })
     } catch (error) {
       setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
     } finally {
@@ -395,7 +392,7 @@ function App() {
       <Topbar screen={screen} onNavigate={setScreen} />
 
       {screen === 'account' ? (
-        <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Catálogo atualizado com sucesso')} onClear={clearData} loading={loading} status={status} />
+        <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
         <LiveTvScreen channels={mediaManager.live} favorites={favoriteChannels} onToggleFavorite={toggleFavoriteChannel} />
       ) : (
