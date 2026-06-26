@@ -426,13 +426,14 @@ async function resolvePlaybackUrl(originalUrl) {
   return data
 }
 
-function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials }) {
+function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials, onBack }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
   const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '', redirected: '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '' })
   const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState('')
   const resolveRequestIdRef = useRef(0)
+  const playerPanelRef = useRef(null)
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -444,27 +445,28 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [channels])
 
-  const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup)
-    ? selectedGroup
-    : groups[0]?.name || ''
+  const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : ''
 
   const filteredChannels = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
     return channels.filter((channel) => {
-      const matchesGroup = !activeGroup || channel.grupo === activeGroup
+      const matchesGroup = activeGroup && channel.grupo === activeGroup
       const matchesSearch = !normalizedSearch || `${channel.nome} ${channel.grupo}`.toLowerCase().includes(normalizedSearch)
       return matchesGroup && matchesSearch
     })
   }, [activeGroup, channels, searchTerm])
 
   const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
-  const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
-    ? selectedChannel
-    : null
+  const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel)) ? selectedChannel : null
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
   const activeCacheKey = activeChannel && activePlaybackUrl ? getPlaybackCacheKey({ type: 'live', streamId: activeStreamId, originalUrl: activePlaybackUrl }) : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
+
+  useEffect(() => {
+    if (activeChannel) playerPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [activeChannel])
+
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
     if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) {
@@ -476,7 +478,6 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   async function selectChannel(channel, event) {
     event?.preventDefault()
     event?.stopPropagation()
-
     const streamId = channel.streamId || channel.id
     const resolveRequestId = resolveRequestIdRef.current + 1
     resolveRequestIdRef.current = resolveRequestId
@@ -489,7 +490,6 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     setSelectedChannel(channel)
     setResolvedPlaybackUrl(cachedStream?.finalUrl || '')
     setPlaybackDebug({ url: initialProxyUrl, format: 'm3u8', originalUrl: m3u8Url, finalUrl: cachedStream?.finalUrl || '', statusCode: cachedStream?.statusCode ?? '', contentType: cachedStream?.contentType || '', redirected: cachedStream ? Boolean(cachedStream.redirected) : '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '', mixedContentFound: /^http:\/\//i.test(m3u8Url) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: initialProxyUrl, cacheUsed: cachedStream ? 'sim' : 'não', resolveTimeMs: cachedStream ? 0 : '', playerStartTimeMs: 0 })
-
     if (!m3u8Url || cachedStream) return
 
     try {
@@ -502,27 +502,10 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
       const proxiedPlaybackUrl = buildStreamProxyUrl(playbackUrl)
       setCachedPlaybackUrl(cacheKey, { type: 'live', streamId, originalUrl: m3u8Url, finalUrl: playbackUrl, statusCode: resolvedStream.statusCode ?? '', contentType: resolvedStream.contentType || '', redirected: Boolean(resolvedStream.redirected) })
       setResolvedPlaybackUrl(playbackUrl)
-      setPlaybackDebug({
-        url: proxiedPlaybackUrl,
-        format: 'm3u8',
-        originalUrl: resolvedStream.originalUrl || m3u8Url,
-        finalUrl,
-        statusCode: resolvedStream.statusCode ?? '',
-        contentType: resolvedStream.contentType || '',
-        redirected: Boolean(resolvedStream.redirected),
-        mixedContentFound: /^http:\/\//i.test(m3u8Url) || /^http:\/\//i.test(finalUrl) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não',
-        proxyUrl: proxiedPlaybackUrl,
-        cacheUsed: 'não',
-        resolveTimeMs: nowMs() - resolveStartedAt,
-        playerStartTimeMs: nowMs() - selectedAt,
-      })
+      setPlaybackDebug({ url: proxiedPlaybackUrl, format: 'm3u8', originalUrl: resolvedStream.originalUrl || m3u8Url, finalUrl, statusCode: resolvedStream.statusCode ?? '', contentType: resolvedStream.contentType || '', redirected: Boolean(resolvedStream.redirected), mixedContentFound: /^http:\/\//i.test(m3u8Url) || /^http:\/\//i.test(finalUrl) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: proxiedPlaybackUrl, cacheUsed: 'não', resolveTimeMs: nowMs() - resolveStartedAt, playerStartTimeMs: nowMs() - selectedAt })
     } catch (error) {
       if (resolveRequestIdRef.current !== resolveRequestId) return
-      setPlaybackDebug((currentDebug) => ({
-        ...currentDebug,
-        errorSource: 'resolve-stream',
-        errorDetail: error.message,
-      }))
+      setPlaybackDebug((currentDebug) => ({ ...currentDebug, errorSource: 'resolve-stream', errorDetail: error.message }))
     }
   }
 
@@ -533,109 +516,46 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   }
 
   if (!channels.length) {
+    return <main className="placeholder-wrap"><section className="panel placeholder"><div className="placeholder-icon">📺</div><p className="eyebrow">LIVE TV</p><h2>Nenhuma lista carregada</h2><p>Carregando catálogo...</p><button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></section></main>
+  }
+
+  if (activeChannel) {
     return (
-      <main className="placeholder-wrap">
-        <section className="panel placeholder">
-          <div className="placeholder-icon">📺</div>
-          <p className="eyebrow">LIVE TV</p>
-          <h2>Nenhuma lista carregada</h2>
-          <p>Carregando catálogo...</p>
+      <main className="single-screen" aria-label={`Player do canal ${activeChannel.nome}`} ref={playerPanelRef}>
+        <section className="panel channel-panel player-only-panel">
+          <div className="section-heading compact"><div><p className="eyebrow">Player LIVE TV</p><h2>{activeChannel.nome}</h2></div><button className="secondary-button" type="button" onClick={() => { setSelectedChannel(null); setResolvedPlaybackUrl('') }}>VOLTAR</button></div>
+          <div className="live-player-card player-only-card"><HlsPlayer url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''} fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''} contentType={playbackDebug.contentType} title={activeChannel.nome} onPlaybackUrlChange={updatePlaybackDebug} /><div className="live-player-info"><p className="eyebrow">Ao vivo</p><h3>{activeChannel.nome}</h3><p>Reproduzindo o canal selecionado.</p></div></div>
+        </section>
+      </main>
+    )
+  }
+
+  if (!activeGroup) {
+    return (
+      <main className="section-home" aria-label="Categorias de LIVE TV">
+        <section className="panel section-home-panel">
+          <div className="section-heading compact"><div><p className="eyebrow">Categorias</p><h2>LIVE TV</h2></div><button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div>
+          <div className="category-grid" role="list" aria-label="Categorias de TV">{groups.map((group) => <button key={group.name} type="button" className="category-card" onClick={() => setSelectedGroup(group.name)}><span>📺</span><strong>{group.name}</strong><small>{group.count} canais</small></button>)}</div>
         </section>
       </main>
     )
   }
 
   return (
-    <main className="live-layout" aria-label="Navegação de canais ao vivo">
-      <aside className="panel group-panel">
-        <div className="section-heading compact">
-          <div>
-            <p className="eyebrow">Categorias</p>
-            <h2>LIVE TV</h2>
-          </div>
-          <span className="category-total">{groups.length}</span>
-        </div>
-        <div className="group-list" role="list" aria-label="Categorias da API Xtream">
-          {groups.map((group) => (
-            <button
-              key={group.name}
-              type="button"
-              className={group.name === activeGroup ? 'active' : ''}
-              onClick={() => setSelectedGroup(group.name)}
-            >
-              <span>{group.name}</span>
-              <small>{group.count}</small>
-            </button>
-          ))}
-        </div>
-      </aside>
-
+    <main className="catalog-detail" aria-label={`Canais de ${activeGroup}`}>
       <section className="panel channel-panel">
-        <div className="live-player-card">
-          <HlsPlayer url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''} fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''} contentType={playbackDebug.contentType} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
-          <div className="live-player-info">
-            <p className="eyebrow">Player LIVE TV</p>
-            <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
-            <p>{activeChannel ? 'Reproduzindo o canal selecionado.' : 'Clique em um canal abaixo para iniciar a reprodução.'}</p>
-
-          </div>
-        </div>
-
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">{activeGroup || 'Canais'}</p>
-            <h2>{activeGroupTotal} canais na categoria</h2>
-          </div>
-          <label className="search-label">
-            <span>Buscar canal</span>
-            <input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" />
-          </label>
-        </div>
-
-        <div className="channel-count-row">
-          <span>{filteredChannels.length} canais encontrados</span>
-          <span>{favorites.length} favoritos</span>
-        </div>
-
-        {filteredChannels.length > 0 ? (
-          <div className="channel-grid" aria-label={`Canais de ${activeGroup}`}>
-            {filteredChannels.map((channel) => {
-              const channelKey = createChannelKey(channel)
-              const quality = getChannelQuality(channel)
-              const isFavorite = Boolean(findFavorite(favorites, channel))
-
-              return (
-                <article
-                  className={`channel-card ${activeChannel && createChannelKey(activeChannel) === channelKey ? 'active' : ''}`}
-                  key={channelKey}
-                  onClick={(event) => selectChannel(channel, event)}
-                  aria-label={`Canal ${channel.nome}`}
-                >
-                  <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
-                    ★
-                  </button>
-                  <button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}>
-                    <div className="channel-logo-wrap">
-                      {channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
-                    </div>
-                    <strong title={channel.nome}>{channel.nome}</strong>
-                    {quality && <span className="quality-badge">{quality}</span>}
-                  </button>
-                </article>
-              )
-            })}
-          </div>
-        ) : (
-          <p className="empty">Nenhum canal encontrado com a busca atual.</p>
-        )}
+        <div className="section-heading"><div><p className="eyebrow">{activeGroup}</p><h2>{activeGroupTotal} canais na categoria</h2></div><div className="detail-actions"><button className="secondary-button" type="button" onClick={() => { setSelectedGroup(''); setSearchTerm('') }}>VOLTAR</button><label className="search-label"><span>Buscar canal</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" /></label></div></div>
+        <div className="channel-count-row"><span>{filteredChannels.length} canais encontrados</span><span>{favorites.length} favoritos</span></div>
+        {filteredChannels.length > 0 ? <div className="channel-grid" aria-label={`Canais de ${activeGroup}`}>{filteredChannels.map((channel) => { const channelKey = createChannelKey(channel); const quality = getChannelQuality(channel); const isFavorite = Boolean(findFavorite(favorites, channel)); return <article className="channel-card" key={channelKey} onClick={(event) => selectChannel(channel, event)} aria-label={`Canal ${channel.nome}`}><button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>★</button><button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}><div className="channel-logo-wrap">{channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}</div><strong title={channel.nome}>{channel.nome}</strong>{quality && <span className="quality-badge">{quality}</span>}</button></article> })}</div> : <p className="empty">Nenhum canal encontrado com a busca atual.</p>}
       </section>
     </main>
   )
 }
 
-function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, detailContent, afterContent, onBack, onCategoryBack }) {
+function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, detailContent, afterContent, onBack, onCategoryBack, onPlayerBack }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
+  const playerPanelRef = useRef(null)
 
   const groups = useMemo(() => {
     const groupMap = items.reduce((accumulator, item) => {
@@ -655,6 +575,11 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
     })
   }, [items, searchTerm, selectedGroup])
 
+
+  useEffect(() => {
+    if (playerUrl || playerFallbackUrl) playerPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [playerFallbackUrl, playerUrl])
+
   function goBackToCategories() {
     setSelectedGroup('')
     setSearchTerm('')
@@ -670,6 +595,34 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
           <h2>Nenhum item carregado</h2>
           <p>Carregando catálogo...</p>
           <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+        </section>
+      </main>
+    )
+  }
+
+  if ((playerUrl || playerFallbackUrl) && selectedItem) {
+    return (
+      <main className="single-screen" aria-label={`Player de ${playerTitle || title}`} ref={playerPanelRef}>
+        <section className="panel channel-panel player-only-panel">
+          <div className="section-heading compact">
+            <div><p className="eyebrow">Player {title}</p><h2>{playerTitle || title}</h2></div>
+            <button className="secondary-button" type="button" onClick={onPlayerBack}>VOLTAR</button>
+          </div>
+          <div className="live-player-card player-only-card">
+            <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
+            <div className="live-player-info"><p className="eyebrow">Reprodução</p><h3>{playerTitle || title}</h3><p>{playerDescription || 'Reproduzindo item selecionado.'}</p></div>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
+  if (selectedItem && detailContent) {
+    return (
+      <main className="single-screen" aria-label={`Detalhes de ${selectedItem.nome}`}>
+        <section className="panel channel-panel">
+          {detailContent}
+          {afterContent}
         </section>
       </main>
     )
@@ -711,8 +664,6 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
           </div>
         </div>
         <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span></div>
-        {detailContent}
-        {afterContent}
         {filteredItems.length > 0 ? (
           <div className="channel-grid media-card-grid" aria-label={`Itens de ${selectedGroup}`}>
             {filteredItems.map((item) => {
@@ -732,16 +683,6 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
             })}
           </div>
         ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
-        {(playerUrl || playerFallbackUrl) && (
-          <div className="live-player-card catalog-player-card">
-            <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
-            <div className="live-player-info">
-              <p className="eyebrow">Player {title}</p>
-              <h3>{playerTitle || `Selecione em ${title}`}</h3>
-              <p>{playerDescription || 'Clique em um item acima para iniciar.'}</p>
-            </div>
-          </div>
-        )}
       </section>
     </main>
   )
@@ -791,6 +732,7 @@ function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
       playerTitle={playingMovie?.nome || ''}
       playerDescription={playingMovie ? 'Reproduzindo filme selecionado.' : ''}
       playerUrl={moviePlayback.playbackUrl}
+      onPlayerBack={() => setPlayingMovie(null)}
       onBack={onBack}
       onCategoryBack={() => { setSelectedMovie(null); setPlayingMovie(null) }}
     />
@@ -866,7 +808,7 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
   )
 
   return (
-    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} detailContent={seriesDetail} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
+    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} detailContent={seriesDetail} onPlayerBack={() => setSelectedEpisode(null)} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
   )
 }
 
@@ -889,7 +831,7 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
     setSelectedItem(item)
   }
 
-  return <CatalogScreen onBack={onBack} title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} />
+  return <CatalogScreen onBack={onBack} title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} onPlayerBack={() => setSelectedItem(null)} />
 }
 
 function Topbar({ screen, onNavigate }) {
@@ -1130,7 +1072,7 @@ function App() {
       ) : screen === 'home' ? (
         <HomeScreen loading={loading} onNavigate={setScreen} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} />
+        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => setScreen('home')} />
       ) : screen === 'movies' ? (
         <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => setScreen('home')} />
       ) : screen === 'series' ? (
