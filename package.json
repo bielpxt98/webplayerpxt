@@ -7,8 +7,7 @@
   "dependencies": {
     "vite": "latest",
     "react": "latest",
-    "react-dom": "latest",
-    "hls.js": "latest"
+    "react-dom": "latest"
   },
   "devDependencies": {}
 }

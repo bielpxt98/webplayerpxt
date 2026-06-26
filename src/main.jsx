@@ -1,9 +1,24 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import Hls from 'hls.js'
 import './styles.css'
 
 const STORAGE_KEY = 'authorized-iptv-player-account'
+
+const emptyAccount = {
+  server: '',
+  username: '',
+  password: '',
+  remember: true,
+}
+
+const navigationItems = [
+  { id: 'account', title: 'ACCOUNT', subtitle: 'Login e conexão', icon: '👤' },
+  { id: 'live', title: 'LIVE TV', subtitle: 'Canais ao vivo', icon: '📺' },
+  { id: 'movies', title: 'MOVIES', subtitle: 'Filmes', icon: '🎬' },
+  { id: 'series', title: 'SERIES', subtitle: 'Séries', icon: '▣' },
+  { id: 'favorites', title: 'FAVORITES', subtitle: 'Favoritos', icon: '★' },
+  { id: 'recents', title: 'RECENTES', subtitle: 'Últimos acessos', icon: '↺' },
+]
 
 function normalizeServer(server) {
   const trimmed = server.trim().replace(/\/+$/, '')
@@ -11,200 +26,231 @@ function normalizeServer(server) {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
 }
 
-function buildHlsUrl({ server, username, password }) {
+function buildPlaylistUrl({ server, username, password }) {
   const normalizedServer = normalizeServer(server)
   if (!normalizedServer || !username.trim() || !password.trim()) return ''
+
   const params = new URLSearchParams({
     username: username.trim(),
     password: password.trim(),
     type: 'm3u_plus',
     output: 'hls',
   })
+
   return `${normalizedServer}/get.php?${params.toString()}`
 }
 
-function parseAttributes(raw = '') {
-  const attrs = {}
-  const matcher = /([\w-]+)="([^"]*)"/g
-  let match
-  while ((match = matcher.exec(raw))) attrs[match[1]] = match[2]
-  return attrs
-}
-
-function parseM3U(text) {
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const channels = []
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]
-    if (!line.startsWith('#EXTINF')) continue
-
-    const [, attributeBlock = '', fallbackName = 'Canal sem nome'] = line.match(/^#EXTINF[^,]*?(.*?),(.*)$/) || []
-    const attrs = parseAttributes(attributeBlock)
-    const url = lines.slice(index + 1).find((candidate) => !candidate.startsWith('#'))
-
-    if (url) {
-      channels.push({
-        id: `${channels.length}-${url}`,
-        name: attrs['tvg-name'] || fallbackName.trim(),
-        group: attrs['group-title'] || 'Sem grupo',
-        logo: attrs['tvg-logo'] || '',
-        url,
-      })
-    }
-  }
-
-  return channels
+function maskSensitiveUrl(url, password) {
+  if (!url) return ''
+  return password ? url.replace(encodeURIComponent(password.trim()), '••••••') : url
 }
 
 function loadSavedAccount() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { server: '', username: '', password: '', m3uUrl: '' }
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY))
+    return saved ? { ...emptyAccount, ...saved, remember: true } : emptyAccount
   } catch {
-    return { server: '', username: '', password: '', m3uUrl: '' }
+    return emptyAccount
   }
 }
 
-function Player({ channel, onBack }) {
-  const videoRef = useRef(null)
+function saveAccount(account) {
+  if (account.remember) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      server: account.server,
+      username: account.username,
+      password: account.password,
+    }))
+    return
+  }
 
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video || !channel?.url) return undefined
+  localStorage.removeItem(STORAGE_KEY)
+}
 
-    let hls
-    if (Hls.isSupported()) {
-      hls = new Hls()
-      hls.loadSource(channel.url)
-      hls.attachMedia(video)
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = channel.url
-    }
+async function testConnection(account) {
+  const url = buildPlaylistUrl(account)
+  if (!url) throw new Error('missing-fields')
 
-    return () => {
-      if (hls) hls.destroy()
-    }
-  }, [channel])
+  const response = await fetch(url, { method: 'GET' })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+  return response
+}
+
+function Topbar({ screen, onNavigate }) {
+  return (
+    <header className="topbar">
+      <button className="logo" onClick={() => onNavigate('account')} aria-label="Abrir account">
+        <span>▶</span>
+        <strong>BlueStream</strong>
+      </button>
+      <nav className="top-navigation" aria-label="Navegação principal">
+        {navigationItems.map((item) => (
+          <button key={item.id} className={screen === item.id ? 'active' : ''} onClick={() => onNavigate(item.id)}>
+            {item.title}
+          </button>
+        ))}
+      </nav>
+    </header>
+  )
+}
+
+function AccountScreen({ account, setAccount, onConnect, onRefresh, onClear, loading, status }) {
+  const generatedUrl = useMemo(() => buildPlaylistUrl(account), [account])
 
   return (
-    <section className="panel player-panel">
-      <div className="section-heading">
-        <button className="ghost-button" onClick={onBack}>← Voltar</button>
-        <div>
-          <p className="eyebrow">Reproduzindo</p>
-          <h2>{channel.name}</h2>
+    <main className="account-page">
+      <section className="login-hero">
+        <p className="eyebrow">ACCOUNT</p>
+        <h1>Entre na sua conta IPTV</h1>
+        <p className="hero-copy">Informe os dados do seu servidor para testar a conexão. A reprodução de canais será ativada nas próximas telas.</p>
+      </section>
+
+      <section className="panel login-card" aria-label="Tela de login">
+        <div className="login-card-header">
+          <div>
+            <p className="eyebrow">Login seguro</p>
+            <h2>Conectar servidor</h2>
+          </div>
+          <div className="account-orb">👤</div>
         </div>
-      </div>
-      <video ref={videoRef} className="video-player" controls autoPlay playsInline />
-    </section>
+
+        <div className="form-grid">
+          <label>
+            Servidor (DNS)
+            <input
+              value={account.server}
+              onChange={(event) => setAccount({ ...account, server: event.target.value })}
+              placeholder="dns.exemplo.com:8080"
+              autoComplete="url"
+            />
+          </label>
+          <label>
+            Usuário
+            <input
+              value={account.username}
+              onChange={(event) => setAccount({ ...account, username: event.target.value })}
+              placeholder="Seu usuário"
+              autoComplete="username"
+            />
+          </label>
+          <label>
+            Senha
+            <input
+              type="password"
+              value={account.password}
+              onChange={(event) => setAccount({ ...account, password: event.target.value })}
+              placeholder="Sua senha"
+              autoComplete="current-password"
+            />
+          </label>
+        </div>
+
+        <label className="remember-row">
+          <input
+            type="checkbox"
+            checked={account.remember}
+            onChange={(event) => setAccount({ ...account, remember: event.target.checked })}
+          />
+          <span>Lembrar login</span>
+        </label>
+
+        {generatedUrl && (
+          <p className="hint">URL gerada: <span>{maskSensitiveUrl(generatedUrl, account.password)}</span></p>
+        )}
+
+        <div className="actions">
+          <button className="primary-button" onClick={onConnect} disabled={loading}>{loading ? 'Conectando...' : 'Conectar'}</button>
+          <button className="secondary-button" onClick={onRefresh} disabled={loading}>{loading ? 'Atualizando...' : 'Atualizar Lista'}</button>
+          <button className="danger-button" onClick={onClear} disabled={loading}>Limpar Dados</button>
+        </div>
+
+        {status.message && <p className={`status ${status.type}`}>{status.message}</p>}
+      </section>
+    </main>
   )
 }
 
-function Account({ form, setForm, onSaveAndLoad, onClear, loading, status }) {
-  const generatedUrl = buildHlsUrl(form)
+function PlaceholderScreen({ title, subtitle, icon }) {
   return (
-    <section className="panel account-panel">
-      <p className="eyebrow">Login manual autorizado</p>
-      <h2>Configurar conta</h2>
-      <div className="form-grid">
-        <label>DNS/Servidor<input value={form.server} onChange={(e) => setForm({ ...form, server: e.target.value })} placeholder="https://servidor.com:8080" /></label>
-        <label>Usuário<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="Seu usuário" /></label>
-        <label>Senha<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Sua senha" /></label>
-        <label className="wide">URL M3U/HLS manual<textarea value={form.m3uUrl} onChange={(e) => setForm({ ...form, m3uUrl: e.target.value })} placeholder="Cole aqui uma URL M3U/HLS completa, se preferir" /></label>
-      </div>
-      {generatedUrl && <p className="hint">Link HLS gerado: <span>{generatedUrl.replace(form.password, '••••••')}</span></p>}
-      <div className="actions">
-        <button className="primary-button" onClick={onSaveAndLoad} disabled={loading}>{loading ? 'Carregando...' : 'Salvar e carregar lista'}</button>
-        <button className="danger-button" onClick={onClear}>Limpar login</button>
-      </div>
-      {status && <p className="status">{status}</p>}
-    </section>
+    <main className="placeholder-wrap">
+      <section className="panel placeholder">
+        <div className="placeholder-icon">{icon}</div>
+        <p className="eyebrow">{title}</p>
+        <h2>{subtitle}</h2>
+        <p>Estrutura preparada para receber a próxima etapa da funcionalidade sem iniciar reprodução agora.</p>
+      </section>
+    </main>
   )
 }
 
-function LiveTv({ channels, search, setSearch, group, setGroup, onSelect, onRefresh }) {
-  const groups = useMemo(() => ['Todos', ...Array.from(new Set(channels.map((c) => c.group))).sort()], [channels])
-  const filtered = channels.filter((channel) => (group === 'Todos' || channel.group === group) && channel.name.toLowerCase().includes(search.toLowerCase()))
-
+function FooterNavigation({ screen, onNavigate }) {
   return (
-    <section className="live-layout">
-      <aside className="panel group-panel">
-        <div className="section-heading compact"><h2>Grupos</h2><button className="ghost-button" onClick={onRefresh}>Atualizar lista</button></div>
-        <div className="group-list">{groups.map((item) => <button key={item} className={item === group ? 'active' : ''} onClick={() => setGroup(item)}>{item}</button>)}</div>
-      </aside>
-      <main className="panel channel-panel">
-        <div className="section-heading"><div><p className="eyebrow">LIVE TV</p><h2>Canais</h2></div><input className="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar canal" /></div>
-        {filtered.length ? <div className="channel-grid">{filtered.map((channel) => <button className="channel-card" key={channel.id} onClick={() => onSelect(channel)}>{channel.logo ? <img src={channel.logo} alt="" /> : <span className="channel-icon">▶</span>}<span>{channel.name}</span><small>{channel.group}</small></button>)}</div> : <p className="empty">Nenhum canal encontrado. Configure a conta ou atualize a lista.</p>}
-      </main>
-    </section>
+    <footer className="footer-actions">
+      {navigationItems.map((item) => (
+        <button key={item.id} className={screen === item.id ? 'active' : ''} onClick={() => onNavigate(item.id)}>
+          <span>{item.icon}</span>
+          {item.title}
+        </button>
+      ))}
+    </footer>
   )
 }
 
 function App() {
-  const [screen, setScreen] = useState('home')
-  const [form, setForm] = useState(loadSavedAccount)
-  const [channels, setChannels] = useState([])
-  const [group, setGroup] = useState('Todos')
-  const [search, setSearch] = useState('')
-  const [selectedChannel, setSelectedChannel] = useState(null)
+  const [screen, setScreen] = useState('account')
+  const [account, setAccount] = useState(loadSavedAccount)
   const [loading, setLoading] = useState(false)
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState({ type: '', message: '' })
 
-  const playlistUrl = form.m3uUrl.trim() || buildHlsUrl(form)
-
-  async function saveAndLoad() {
-    if (!playlistUrl) {
-      setStatus('Informe DNS/usuário/senha ou cole uma URL M3U/HLS válida.')
+  async function handleConnection(successMessage = 'Conectado com sucesso') {
+    if (!buildPlaylistUrl(account)) {
+      setStatus({ type: 'error', message: 'Preencha servidor, usuário e senha.' })
       return
     }
+
     setLoading(true)
-    setStatus('')
+    setStatus({ type: '', message: '' })
+
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(form))
-      const response = await fetch(playlistUrl)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const text = await response.text()
-      const parsed = parseM3U(text)
-      setChannels(parsed)
-      setGroup('Todos')
-      setScreen('live')
-      setStatus(`${parsed.length} canais carregados.`)
-    } catch (error) {
-      setStatus(`Não foi possível carregar a lista: ${error.message}`)
+      saveAccount(account)
+      await testConnection(account)
+      setStatus({ type: 'success', message: successMessage })
+    } catch {
+      setStatus({ type: 'error', message: 'Erro ao conectar' })
     } finally {
       setLoading(false)
     }
   }
 
-  function clearLogin() {
+  function clearData() {
     localStorage.removeItem(STORAGE_KEY)
-    setForm({ server: '', username: '', password: '', m3uUrl: '' })
-    setChannels([])
-    setSelectedChannel(null)
-    setStatus('Login e lista removidos deste navegador.')
+    setAccount(emptyAccount)
+    setStatus({ type: 'success', message: 'Dados removidos deste navegador.' })
   }
 
-  const mainCards = [
-    ['live', 'LIVE TV', 'Transmissões ao vivo'],
-    ['epg', 'EPG', 'Guia de programação'],
-    ['vod', 'VOD', 'Em desenvolvimento'],
-    ['series', 'SERIES', 'Em desenvolvimento'],
-  ]
+  const currentItem = navigationItems.find((item) => item.id === screen) || navigationItems[0]
 
   return (
     <div className="app-shell">
       <div className="background-glow" />
-      <header className="topbar">
-        <button className="logo" onClick={() => setScreen('home')}><span>▶</span><strong>BlueStream</strong></button>
-        {screen !== 'home' && <button className="ghost-button" onClick={() => { setSelectedChannel(null); setScreen('home') }}>Voltar</button>}
-      </header>
+      <Topbar screen={screen} onNavigate={setScreen} />
 
-      {screen === 'home' && <main className="home"><p className="eyebrow">Player IPTV genérico autorizado</p><h1>Escolha uma opção</h1><div className="main-menu">{mainCards.map(([id, title, subtitle]) => <button key={id} className="menu-card" onClick={() => setScreen(id)}><span className="play-badge">▶</span><strong>{title}</strong><small>{subtitle}</small></button>)}</div></main>}
-      {screen === 'account' && <Account form={form} setForm={setForm} onSaveAndLoad={saveAndLoad} onClear={clearLogin} loading={loading} status={status} />}
-      {screen === 'live' && (selectedChannel ? <Player channel={selectedChannel} onBack={() => setSelectedChannel(null)} /> : <LiveTv channels={channels} search={search} setSearch={setSearch} group={group} setGroup={setGroup} onSelect={setSelectedChannel} onRefresh={saveAndLoad} />)}
-      {['epg', 'vod', 'series'].includes(screen) && <section className="panel placeholder"><p className="eyebrow">{screen.toUpperCase()}</p><h2>Em desenvolvimento</h2><p>Esta área está preparada para evolução futura.</p></section>}
+      {screen === 'account' ? (
+        <AccountScreen
+          account={account}
+          setAccount={setAccount}
+          onConnect={() => handleConnection('Conectado com sucesso')}
+          onRefresh={() => handleConnection('Lista atualizada com sucesso')}
+          onClear={clearData}
+          loading={loading}
+          status={status}
+        />
+      ) : (
+        <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} />
+      )}
 
-      <footer className="footer-actions"><button onClick={() => setScreen('account')}>ACCOUNT</button><button onClick={() => setScreen('live')}>FAVORITE</button><button onClick={() => setScreen('account')}>SETTINGS</button></footer>
+      <FooterNavigation screen={screen} onNavigate={setScreen} />
     </div>
   )
 }
