@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react'
+import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
@@ -16,6 +17,8 @@ const navigationItems = [
   { id: 'live', title: 'LIVE TV', subtitle: 'Canais ao vivo', icon: '📺' },
   { id: 'movies', title: 'MOVIES', subtitle: 'Filmes', icon: '🎬' },
   { id: 'series', title: 'SERIES', subtitle: 'Séries', icon: '▣' },
+  { id: 'radios', title: 'RADIOS', subtitle: 'Estações de rádio', icon: '📻' },
+  { id: 'others', title: 'OUTROS', subtitle: 'Itens sem categoria', icon: '◌' },
   { id: 'favorites', title: 'FAVORITES', subtitle: 'Favoritos', icon: '★' },
   { id: 'recents', title: 'RECENTES', subtitle: 'Últimos acessos', icon: '↺' },
 ]
@@ -74,7 +77,7 @@ async function testConnection(account) {
   const response = await fetch(url, { method: 'GET' })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-  return response
+  return response.text()
 }
 
 function Topbar({ screen, onNavigate }) {
@@ -171,7 +174,7 @@ function AccountScreen({ account, setAccount, onConnect, onRefresh, onClear, loa
   )
 }
 
-function PlaceholderScreen({ title, subtitle, icon }) {
+function PlaceholderScreen({ title, subtitle, icon, mediaItems = [], total = 0 }) {
   return (
     <main className="placeholder-wrap">
       <section className="panel placeholder">
@@ -179,6 +182,19 @@ function PlaceholderScreen({ title, subtitle, icon }) {
         <p className="eyebrow">{title}</p>
         <h2>{subtitle}</h2>
         <p>Estrutura preparada para receber a próxima etapa da funcionalidade sem iniciar reprodução agora.</p>
+        <div className="media-summary">
+          <strong>{total}</strong> itens carregados nesta seção
+        </div>
+        {mediaItems.length > 0 && (
+          <ul className="media-preview" aria-label={`Prévia de ${title}`}>
+            {mediaItems.slice(0, 5).map((item) => (
+              <li key={`${item.id}-${item.url}`}>
+                <span>{item.nome}</span>
+                <small>{item.grupo}</small>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </main>
   )
@@ -202,6 +218,7 @@ function App() {
   const [account, setAccount] = useState(loadSavedAccount)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
+  const mediaManager = useMediaManager()
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
     if (!buildPlaylistUrl(account)) {
@@ -214,8 +231,9 @@ function App() {
 
     try {
       saveAccount(account)
-      await testConnection(account)
-      setStatus({ type: 'success', message: successMessage })
+      const playlistContent = await testConnection(account)
+      const playlist = mediaManager.loadPlaylist(playlistContent, buildPlaylistUrl(account))
+      setStatus({ type: 'success', message: `${successMessage}. ${playlist.all.length} itens organizados.` })
     } catch {
       setStatus({ type: 'error', message: 'Erro ao conectar' })
     } finally {
@@ -226,10 +244,19 @@ function App() {
   function clearData() {
     localStorage.removeItem(STORAGE_KEY)
     setAccount(emptyAccount)
+    mediaManager.clearCatalog()
     setStatus({ type: 'success', message: 'Dados removidos deste navegador.' })
   }
 
   const currentItem = navigationItems.find((item) => item.id === screen) || navigationItems[0]
+  const mediaByScreen = {
+    live: mediaManager.live,
+    movies: mediaManager.movies,
+    series: mediaManager.series,
+    radios: mediaManager.radios,
+    others: mediaManager.others,
+  }
+  const currentMediaItems = mediaByScreen[screen] || []
 
   return (
     <div className="app-shell">
@@ -247,7 +274,13 @@ function App() {
           status={status}
         />
       ) : (
-        <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} />
+        <PlaceholderScreen
+          title={currentItem.title}
+          subtitle={currentItem.subtitle}
+          icon={currentItem.icon}
+          mediaItems={currentMediaItems}
+          total={currentMediaItems.length}
+        />
       )}
 
       <FooterNavigation screen={screen} onNavigate={setScreen} />
@@ -255,4 +288,8 @@ function App() {
   )
 }
 
-createRoot(document.getElementById('root')).render(<App />)
+createRoot(document.getElementById('root')).render(
+  <MediaManagerProvider>
+    <App />
+  </MediaManagerProvider>,
+)

@@ -311,3 +311,51 @@ input:focus {
   .actions button { width: 100%; }
   .footer-actions button { padding-inline: 12px; }
 }
+
+.media-summary {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 14px 0 18px;
+  padding: 10px 16px;
+  border: 1px solid rgba(117, 217, 255, .2);
+  border-radius: 999px;
+  color: #cfefff;
+  background: rgba(0, 9, 24, .24);
+}
+
+.media-summary strong {
+  color: #75d9ff;
+  font-size: 1.35rem;
+}
+
+.media-preview {
+  display: grid;
+  gap: 10px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.media-preview li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(117, 217, 255, .14);
+  border-radius: 16px;
+  background: rgba(0, 9, 24, .24);
+}
+
+.media-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-preview small {
+  flex: 0 0 auto;
+  color: #a9c6de;
+}
