@@ -344,6 +344,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
+  const browserPlaybackUrl = playbackDebug.finalUrl || playbackDebug.originalUrl || activePlaybackUrl
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
   const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl)
   const updatePlaybackDebug = useCallback((debugInfo) => {
@@ -395,6 +396,12 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
         errorDetail: error.message,
       }))
     }
+  }
+
+  function openPlaybackInBrowser() {
+    const urlToOpen = browserPlaybackUrl || activePlaybackUrl
+    if (!urlToOpen) return
+    window.open(urlToOpen, '_blank')
   }
 
   function toggleChannelFavorite(channel, event) {
@@ -457,6 +464,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <code>nome do canal: {activeChannel?.nome || 'nenhum canal selecionado'}</code>
               <code>formato solicitado: /live/username/password/stream_id.m3u8</code>
               <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <button className="secondary-button browser-open-button" type="button" onClick={openPlaybackInBrowser} disabled={!browserPlaybackUrl && !activePlaybackUrl}>Abrir no navegador</button>
               <code>URL real .m3u8: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL original: {playbackDebug.originalUrl || activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL final resolvida: {playbackDebug.finalUrl || 'aguardando redirect/token'}</code>

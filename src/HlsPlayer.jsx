@@ -159,16 +159,29 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         console.info('[HLS PLAYER] Hls.js error', data)
+        const errorDetail = `${data?.type || 'unknown'}: ${data?.details || 'sem detalhes'}`
         onPlaybackUrlChange?.({
           errorSource: data?.fatal ? 'hls-fatal' : 'hls-warning',
-          errorDetail: `${data?.type || 'unknown'}: ${data?.details || 'sem detalhes'}`,
+          errorDetail,
           failedUrl: activeUrlRef.current,
+          manifestParsed: data?.fatal ? 'falhou' : '',
+          playStatus: data?.fatal ? 'falhou' : '',
+          playError: data?.fatal ? `Hls.js fatal: ${errorDetail}` : '',
         })
 
-        if (data?.fatal && fallbackUrl && fallbackUrl !== activeUrlRef.current && !retryingFallbackRef.current) {
+        if (!data?.fatal) return
+
+        hls.stopLoad()
+
+        if (fallbackUrl && fallbackUrl !== activeUrlRef.current && !retryingFallbackRef.current) {
           retryingFallbackRef.current = true
           setFallbackPlaybackUrl(fallbackUrl)
+          return
         }
+
+        hls.destroy()
+        if (hlsRef.current === hls) hlsRef.current = null
+        video.pause()
       })
 
       hls.loadSource(effectiveUrl)
