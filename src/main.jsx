@@ -247,6 +247,10 @@ function getItemContainerExtension(item) {
   return String(item?.raw?.container_extension || item?.raw?.container || item?.container_extension || 'mp4').replace(/^\.+/, '') || 'mp4'
 }
 
+function getItemDescription(item, fallback = '') {
+  return item?.descricao || item?.description || item?.plot || item?.raw?.plot || item?.raw?.description || item?.raw?.overview || item?.raw?.info?.plot || fallback
+}
+
 function createFavoriteSnapshot(item) {
   return {
     key: createItemKey(item),
@@ -459,6 +463,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     : null
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
+  const activeCacheKey = activeChannel && activePlaybackUrl ? getPlaybackCacheKey({ type: 'live', streamId: activeStreamId, originalUrl: activePlaybackUrl }) : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
@@ -475,11 +480,15 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     const streamId = channel.streamId || channel.id
     const resolveRequestId = resolveRequestIdRef.current + 1
     resolveRequestIdRef.current = resolveRequestId
+    const selectedAt = nowMs()
     const m3u8Url = buildXtreamPlaybackUrl(sessionCredentials, 'live', streamId, 'm3u8')
+    const cacheKey = getPlaybackCacheKey({ type: 'live', streamId, originalUrl: m3u8Url })
+    const cachedStream = getCachedPlaybackUrl(cacheKey)
+    const initialProxyUrl = cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : buildStreamProxyUrl(m3u8Url)
 
     setSelectedChannel(channel)
     setResolvedPlaybackUrl(cachedStream?.finalUrl || '')
-    setPlaybackDebug({ url: cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : initialProxyUrl, format: 'm3u8', originalUrl: m3u8Url, finalUrl: cachedStream?.finalUrl || '', statusCode: cachedStream?.statusCode ?? '', contentType: cachedStream?.contentType || '', redirected: cachedStream ? Boolean(cachedStream.redirected) : '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '', mixedContentFound: /^http:\/\//i.test(m3u8Url) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : initialProxyUrl, cacheUsed: cachedStream ? 'sim' : 'não', resolveTimeMs: cachedStream ? 0 : '', playerStartTimeMs: 0 })
+    setPlaybackDebug({ url: initialProxyUrl, format: 'm3u8', originalUrl: m3u8Url, finalUrl: cachedStream?.finalUrl || '', statusCode: cachedStream?.statusCode ?? '', contentType: cachedStream?.contentType || '', redirected: cachedStream ? Boolean(cachedStream.redirected) : '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '', mixedContentFound: /^http:\/\//i.test(m3u8Url) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: initialProxyUrl, cacheUsed: cachedStream ? 'sim' : 'não', resolveTimeMs: cachedStream ? 0 : '', playerStartTimeMs: 0 })
 
     if (!m3u8Url || cachedStream) return
 
@@ -624,7 +633,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   )
 }
 
-function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, afterContent, onBack, onCategoryBack }) {
+function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, detailContent, afterContent, onBack, onCategoryBack }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
 
@@ -702,6 +711,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
           </div>
         </div>
         <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span></div>
+        {detailContent}
         {afterContent}
         {filteredItems.length > 0 ? (
           <div className="channel-grid media-card-grid" aria-label={`Itens de ${selectedGroup}`}>
@@ -722,7 +732,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
             })}
           </div>
         ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
-        {(playerUrl || selectedItem) && (
+        {(playerUrl || playerFallbackUrl) && (
           <div className="live-player-card catalog-player-card">
             <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
             <div className="live-player-info">
@@ -737,10 +747,33 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
   )
 }
 
+function MediaDetail({ item, icon, actionLabel, onAction, onBack, children }) {
+  if (!item) return null
+  const poster = getItemPoster(item)
+  const description = getItemDescription(item, 'Sem descrição disponível para este título.')
+
+  return (
+    <section className="media-detail-panel" aria-label={`Detalhes de ${item.nome}`}>
+      <div className="media-detail-poster">{poster ? <img src={poster} alt={`Capa ${item.nome}`} /> : <span>{icon}</span>}</div>
+      <div className="media-detail-copy">
+        <p className="eyebrow">Detalhes</p>
+        <h2>{item.nome}</h2>
+        <p>{description}</p>
+        {children}
+        <div className="detail-actions">
+          {onAction && <button className="primary-button" type="button" onClick={onAction}>{actionLabel}</button>}
+          <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, onBack }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
-  const originalMovieUrl = selectedMovie ? getPlayableItemUrl(selectedMovie, sessionCredentials) : ''
-  const moviePlayback = useResolvedPlaybackUrl({ item: selectedMovie, originalUrl: originalMovieUrl })
+  const [playingMovie, setPlayingMovie] = useState(null)
+  const originalMovieUrl = playingMovie ? getPlayableItemUrl(playingMovie, sessionCredentials) : ''
+  const moviePlayback = useResolvedPlaybackUrl({ item: playingMovie, originalUrl: originalMovieUrl })
   const handleMoviePlaybackDebug = useCallback((debugInfo) => {
     if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) moviePlayback.clearCache()
   }, [moviePlayback.clearCache])
@@ -752,13 +785,14 @@ function MoviesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
       items={items}
       favorites={favorites}
       onToggleFavorite={onToggleFavorite}
-      onSelectItem={setSelectedMovie}
+      onSelectItem={(movie) => { setSelectedMovie(movie); setPlayingMovie(null) }}
       selectedItem={selectedMovie}
-      playerTitle={selectedMovie?.nome || ''}
-      playerDescription={selectedMovie ? 'Reproduzindo filme selecionado.' : 'Clique em um filme abaixo para iniciar a reprodução.'}
-      playerUrl={selectedMovie ? getPlayableItemUrl(selectedMovie, sessionCredentials) : ''}
+      detailContent={<MediaDetail item={selectedMovie} icon="🎬" actionLabel="CONTINUAR / JOGAR" onAction={() => setPlayingMovie(selectedMovie)} onBack={() => { setSelectedMovie(null); setPlayingMovie(null) }} />}
+      playerTitle={playingMovie?.nome || ''}
+      playerDescription={playingMovie ? 'Reproduzindo filme selecionado.' : ''}
+      playerUrl={moviePlayback.playbackUrl}
       onBack={onBack}
-      onCategoryBack={() => setSelectedMovie(null)}
+      onCategoryBack={() => { setSelectedMovie(null); setPlayingMovie(null) }}
     />
   )
 }
@@ -800,11 +834,11 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
     : error || (selectedEpisode ? `Temporada ${selectedEpisode.seasonNumber || selectedEpisode.season || ''}` : selectedSeries ? 'Escolha um episódio abaixo.' : 'Clique em uma série para carregar episódios.')
 
   const episodesPanel = selectedSeries ? (
-    <section className="series-episodes-panel" aria-label={`Episódios de ${selectedSeries.nome}`}>
+    <div className="series-episodes-wrap">
       <div className="section-heading compact">
         <div>
-          <p className="eyebrow">Episódios</p>
-          <h2>{selectedSeries.nome}</h2>
+          <p className="eyebrow">Temporadas / Episódios</p>
+          <h2>Escolha um episódio</h2>
         </div>
         <span className="category-total">{episodes.length}</span>
       </div>
@@ -822,11 +856,17 @@ function SeriesScreen({ sessionCredentials, items, favorites, onToggleFavorite, 
           ))}
         </ul>
       )}
-    </section>
+    </div>
   ) : null
 
+  const seriesDetail = (
+    <MediaDetail item={selectedSeries} icon="▣" onBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }}>
+      {episodesPanel}
+    </MediaDetail>
+  )
+
   return (
-    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || selectedSeries?.nome || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} afterContent={episodesPanel} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
+    <CatalogScreen title="SERIES" icon="▣" items={items} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} detailContent={seriesDetail} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
   )
 }
 
