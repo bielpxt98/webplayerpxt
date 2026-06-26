@@ -11,7 +11,7 @@ function getErrorMessage(errorType) {
   return 'Este canal não pôde ser reproduzido agora.'
 }
 
-export default function HlsPlayer({ url, fallbackUrl, title }) {
+export default function HlsPlayer({ url, fallbackUrl, title, onPlaybackUrlChange }) {
   const videoRef = useRef(null)
   const [activeUrl, setActiveUrl] = useState(url || '')
   const [isLoading, setIsLoading] = useState(false)
@@ -20,6 +20,13 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
   useEffect(() => {
     setActiveUrl(url || '')
   }, [url])
+
+  useEffect(() => {
+    onPlaybackUrlChange?.({
+      url: activeUrl,
+      format: /\.ts(?:[?#].*)?$/i.test(activeUrl) ? 'ts' : 'm3u8',
+    })
+  }, [activeUrl, onPlaybackUrlChange])
 
   useEffect(() => {
     const video = videoRef.current
@@ -57,17 +64,25 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
     }
 
     const handleError = () => {
+      const mediaError = video.error ? {
+        code: video.error.code,
+        message: video.error.message || 'sem mensagem do elemento video',
+      } : null
+      console.error('[LIVE TV] Native video playback error', {
+        failedUrl: maskDiagnosticUrl(activeUrl),
+        fallbackUrl: maskDiagnosticUrl(fallbackUrl),
+        mediaError,
+      })
+      onPlaybackUrlChange?.({
+        url: activeUrl,
+        format: /\.ts(?:[?#].*)?$/i.test(activeUrl) ? 'ts' : 'm3u8',
+        failedUrl: activeUrl,
+        errorSource: 'video element',
+        errorDetail: mediaError ? `code ${mediaError.code}: ${mediaError.message}` : 'erro sem detalhe do elemento video',
+      })
       if (!isCurrent || tryFallback()) return
       setIsLoading(false)
-      console.error('[LIVE TV] Native video playback error', {
-        url: maskDiagnosticUrl(activeUrl),
-        fallbackUrl: maskDiagnosticUrl(fallbackUrl),
-        mediaError: video.error ? {
-          code: video.error.code,
-          message: video.error.message,
-        } : null,
-      })
-      setError('Este canal não pôde ser reproduzido agora.')
+      setError(`Erro do video element: ${mediaError ? `code ${mediaError.code}: ${mediaError.message}` : 'sem detalhe'}. URL que falhou: ${maskDiagnosticUrl(activeUrl)}`)
     }
 
     video.addEventListener('canplay', handleCanPlay)
@@ -87,7 +102,7 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         console.error('[LIVE TV] HlsPlayer error detail', {
-          url: maskDiagnosticUrl(activeUrl),
+          failedUrl: maskDiagnosticUrl(activeUrl),
           fallbackUrl: maskDiagnosticUrl(fallbackUrl),
           type: data?.type,
           details: data?.details,
@@ -95,10 +110,17 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
           response: data?.response,
           error: data?.error,
         })
+        onPlaybackUrlChange?.({
+          url: activeUrl,
+          format: /\.ts(?:[?#].*)?$/i.test(activeUrl) ? 'ts' : 'm3u8',
+          failedUrl: activeUrl,
+          errorSource: 'HLS.js',
+          errorDetail: `${data?.type || 'tipo desconhecido'} / ${data?.details || 'detalhe desconhecido'}${data?.fatal ? ' / fatal' : ''}`,
+        })
         if (!isCurrent || !data?.fatal) return
         if (tryFallback()) return
         setIsLoading(false)
-        setError(getErrorMessage(data.type))
+        setError(`${getErrorMessage(data.type)} Erro do HLS.js: ${data?.type || 'tipo desconhecido'} / ${data?.details || 'detalhe desconhecido'}. URL que falhou: ${maskDiagnosticUrl(activeUrl)}`)
       })
     } else {
       setIsLoading(false)

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
@@ -290,6 +290,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
   const [playbackFormat, setPlaybackFormat] = useState('m3u8')
+  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8' })
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -325,6 +326,9 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const activeFallbackUrl = playbackFormat === 'm3u8' && activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
   const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl) || hasMaskedPasswordInUrl(activeFallbackUrl)
+  const updatePlaybackDebug = useCallback((debugInfo) => {
+    setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
+  }, [])
 
   function selectChannel(channel) {
     console.info('[LIVE TV] Selected channel playback URL', {
@@ -337,6 +341,8 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
         ts: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts'),
       },
     })
+    setPlaybackFormat('m3u8')
+    setPlaybackDebug({ url: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8'), format: 'm3u8' })
     setSelectedChannel(channel)
   }
 
@@ -380,7 +386,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={activePlaybackUrl} fallbackUrl={activeFallbackUrl} title={activeChannel?.nome || 'Player LIVE TV'} />
+          <HlsPlayer url={activePlaybackUrl} fallbackUrl={activeFallbackUrl} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
           <div className="live-player-info">
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
@@ -403,8 +409,11 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <code>password: {sessionCredentials?.password ? 'REAL (visível no diagnóstico temporário)' : 'ausente'}</code>
               <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : 'selecione um canal para gerar a URL'}</code>
               <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
-              <code>formato: /live/username/password/stream_id.{playbackFormat}</code>
-              <code>URL: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <code>formato solicitado: /live/username/password/stream_id.{playbackFormat}</code>
+              <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <code>em uso agora: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
+              {playbackDebug.failedUrl && <code>última URL que falhou: {playbackDebug.failedUrl}</code>}
+              {playbackDebug.errorSource && <code>erro do player: {playbackDebug.errorSource} - {playbackDebug.errorDetail}</code>}
               {playbackFormat === 'm3u8' && activeFallbackUrl && <code>fallback .ts: {activeFallbackUrl}</code>}
               {hasMaskedLiveUrl && <code>erro: URL ainda está usando senha mascarada</code>}
             </div>
