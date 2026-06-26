@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +11,7 @@ const SERVICE_NAME = 'pxt-player-api';
 const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 10000);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const frontendDistPath = path.resolve(__dirname, '..', 'dist');
+const frontendDistPath = resolveFrontendDistPath();
 
 const defaultAllowedOrigins = [
   'http://localhost:5173',
@@ -120,11 +121,20 @@ app.post('/api/xtream/validate', async (req, res) => {
   }
 });
 
-app.use(express.static(frontendDistPath));
+if (frontendDistPath) {
+  app.use(express.static(frontendDistPath));
+}
 
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) {
+  if (req.path.startsWith('/api')) {
     return res.status(404).json({ ok: false, error: 'API route not found.' });
+  }
+
+  if (!frontendDistPath) {
+    return res.status(503).json({
+      ok: false,
+      error: 'Frontend build not found. Run npm run build before starting the server.',
+    });
   }
 
   return res.sendFile(path.join(frontendDistPath, 'index.html'), (error) => {
@@ -139,6 +149,24 @@ app.use((err, _req, res, _next) => {
 
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
+
+function resolveFrontendDistPath() {
+  const candidatePaths = [
+    path.resolve(__dirname, '..', 'dist'),
+    path.resolve(__dirname, 'dist'),
+  ];
+
+  const distPath = candidatePaths.find((candidatePath) => (
+    fs.existsSync(path.join(candidatePath, 'index.html'))
+  ));
+
+  if (!distPath) {
+    console.warn(`Frontend build not found. Checked: ${candidatePaths.join(', ')}`);
+    return null;
+  }
+
+  return distPath;
+}
 
 function isLocalOrigin(origin) {
   try {
