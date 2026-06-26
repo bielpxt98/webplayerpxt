@@ -2,7 +2,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "cd backend && npm start",
+    "build:start": "npm run build && npm start"
   },
   "dependencies": {
     "hls.js": "^1.6.16",

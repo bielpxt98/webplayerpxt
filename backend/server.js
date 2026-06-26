@@ -1,30 +1,23 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const SERVICE_NAME = 'pxt-player-api';
 const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 10000);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendDistPath = path.resolve(__dirname, '..', 'dist');
 
 const defaultAllowedOrigins = [
-  process.env.FRONTEND_ORIGIN,
-  'https://stupendous-bombolone-32f796.netlify.app',
   'http://localhost:5173',
   'http://localhost:3000',
-  'https://stupendous-bombolone-32f796.netlify.app',
+  `http://localhost:${PORT}`,
 ];
 
-const allowedOrigins = [
-  ...defaultAllowedOrigins,
-  ...(process.env.CORS_ORIGIN || '').split(','),
-]
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin || isAllowedOrigin(origin)) {
 const configuredAllowedOrigins = [
   process.env.CORS_ORIGIN,
   process.env.FRONTEND_ORIGIN,
@@ -40,15 +33,11 @@ const corsOptions = {
   origin(origin, callback) {
     const normalizedOrigin = origin?.replace(/\/+$/, '');
 
-    if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin)) {
+    if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin) || isLocalOrigin(normalizedOrigin)) {
       callback(null, true);
       return;
     }
 
-    callback(null, false);
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
     callback(new Error('Origin not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -131,6 +120,18 @@ app.post('/api/xtream/validate', async (req, res) => {
   }
 });
 
+app.use(express.static(frontendDistPath));
+
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ ok: false, error: 'API route not found.' });
+  }
+
+  return res.sendFile(path.join(frontendDistPath, 'index.html'), (error) => {
+    if (error) next(error);
+  });
+});
+
 app.use((err, _req, res, _next) => {
   if (err?.message === 'Origin not allowed by CORS') {
     return res.status(403).json({ ok: false, error: err.message });
@@ -139,11 +140,7 @@ app.use((err, _req, res, _next) => {
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
 
-function isAllowedOrigin(origin) {
-  if (allowedOrigins.includes(origin)) {
-    return true;
-  }
-
+function isLocalOrigin(origin) {
   try {
     const { hostname } = new URL(origin);
     return hostname === 'localhost' || hostname === '127.0.0.1';
