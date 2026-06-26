@@ -50,7 +50,7 @@ Resposta com dados básicos, sem expor a senha:
 - Não carrega canais, filmes ou séries.
 - Não salva dados no Supabase.
 - Não retorna a senha na resposta.
-- Usa CORS para permitir o frontend do Netlify e origens locais de desenvolvimento.
+- Usa CORS para permitir o frontend do Netlify (`https://stupendous-bombolone-32f796.netlify.app`) e origens locais de desenvolvimento, incluindo preflight `OPTIONS`.
 
 ## Como rodar localmente
 
@@ -74,7 +74,8 @@ curl http://localhost:3001/health
 | Variável | Obrigatória | Exemplo | Descrição |
 | --- | --- | --- | --- |
 | `PORT` | Não | `3001` | Porta local. No Render, ela é injetada automaticamente. |
-| `CORS_ORIGIN` | Sim em produção | `https://your-pxt-player.netlify.app` | Origem do frontend no Netlify. Aceita múltiplas origens separadas por vírgula. |
+| `CORS_ORIGIN` | Sim em produção | `https://stupendous-bombolone-32f796.netlify.app` | Origem do frontend no Netlify. Aceita múltiplas origens separadas por vírgula. |
+| `FRONTEND_ORIGIN` | Não | `https://stupendous-bombolone-32f796.netlify.app` | Alias opcional de `CORS_ORIGIN`; também aceita múltiplas origens separadas por vírgula. |
 | `XTREAM_TIMEOUT_MS` | Não | `10000` | Timeout das chamadas para `player_api.php`, em milissegundos. |
 
 ## Como publicar no Render
@@ -86,6 +87,7 @@ curl http://localhost:3001/health
 5. Configure o **Build Command** como `npm install`.
 6. Configure o **Start Command** como `npm start`.
 7. Adicione as variáveis de ambiente:
-   - `CORS_ORIGIN=https://seu-frontend.netlify.app`
+   - `CORS_ORIGIN=https://stupendous-bombolone-32f796.netlify.app`
+   - ou `FRONTEND_ORIGIN=https://stupendous-bombolone-32f796.netlify.app`
    - `XTREAM_TIMEOUT_MS=10000` (opcional)
 8. Faça o deploy e teste `https://seu-servico.onrender.com/health`.
