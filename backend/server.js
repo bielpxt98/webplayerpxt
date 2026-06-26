@@ -108,6 +108,46 @@ app.post('/api/xtream/validate', async (req, res) => {
 });
 
 
+
+app.post('/api/stream/resolve', async (req, res) => {
+  const { url } = req.body || {};
+
+  if (!url) {
+    return res.status(400).json({
+      ok: false,
+      error: 'url is required.',
+    });
+  }
+
+  let streamUrl;
+
+  try {
+    streamUrl = normalizeStreamUrl(url);
+  } catch (_error) {
+    return res.status(400).json({
+      ok: false,
+      error: 'url must be a valid http or https URL.',
+    });
+  }
+
+  try {
+    const resolvedStream = await resolveStreamRedirect(streamUrl);
+    return res.json({
+      ok: true,
+      ...resolvedStream,
+    });
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(error?.status || (isAbort ? 504 : 502)).json({
+      ok: false,
+      error: error?.publicMessage || (isAbort
+        ? 'Stream URL resolve request timed out.'
+        : 'Could not resolve stream URL.'),
+      originalUrl: streamUrl.toString(),
+    });
+  }
+});
+
 app.post('/api/xtream/series-info', async (req, res) => {
   const { server, username, password, seriesId } = req.body || {};
 
@@ -177,6 +217,75 @@ app.use((err, _req, res, _next) => {
 
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
+
+
+async function resolveStreamRedirect(streamUrl) {
+  try {
+    return await requestStreamHeaders(streamUrl, 'HEAD');
+  } catch (error) {
+    if (!shouldFallbackToRangeGet(error)) {
+      throw error;
+    }
+
+    return requestStreamHeaders(streamUrl, 'GET');
+  }
+}
+
+async function requestStreamHeaders(streamUrl, method) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response;
+
+  try {
+    response = await fetch(streamUrl, {
+      method,
+      redirect: 'follow',
+      headers: {
+        Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
+        ...(method === 'GET' ? { Range: 'bytes=0-0' } : {}),
+      },
+      signal: controller.signal,
+    });
+
+    if (method === 'HEAD' && [403, 405, 501].includes(response.status)) {
+      const error = new Error(`Stream URL HEAD request responded with HTTP ${response.status}.`);
+      error.allowGetFallback = true;
+      throw error;
+    }
+
+    if (method === 'GET') {
+      await response.body?.cancel();
+    }
+
+    return {
+      originalUrl: streamUrl.toString(),
+      finalUrl: response.url || streamUrl.toString(),
+      statusCode: response.status,
+      contentType: response.headers.get('content-type') || '',
+    };
+  } catch (error) {
+    if (!error.status && error?.name !== 'AbortError') {
+      error.status = 502;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function shouldFallbackToRangeGet(error) {
+  return error?.name !== 'AbortError' || error?.allowGetFallback;
+}
+
+function normalizeStreamUrl(url) {
+  const streamUrl = new URL(url);
+
+  if (!['http:', 'https:'].includes(streamUrl.protocol)) {
+    throw new Error('Invalid protocol');
+  }
+
+  return streamUrl;
+}
 
 function resolveFrontendDistPath() {
   const candidatePaths = [

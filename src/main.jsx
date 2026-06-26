@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react'
+import React, { useCallback, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
@@ -285,11 +285,34 @@ function normalizeEpisodes(seriesInfo) {
   ))
 }
 
+
+async function resolvePlaybackUrl(originalUrl) {
+  if (!originalUrl) return null
+
+  const response = await fetch(`${BACKEND_BASE_URL}/api/stream/resolve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ url: originalUrl }),
+  })
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || 'Não foi possível resolver o redirect do stream.')
+  }
+
+  return data
+}
+
 function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
-  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8' })
+  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '' })
+  const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState('')
+  const resolveRequestIdRef = useRef(0)
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -320,27 +343,55 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     : null
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
+  const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
   const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl)
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
   }, [])
 
-  function selectChannel(channel, event) {
+  async function selectChannel(channel, event) {
     event?.preventDefault()
     event?.stopPropagation()
 
     const streamId = channel.streamId || channel.id
+    const resolveRequestId = resolveRequestIdRef.current + 1
+    resolveRequestIdRef.current = resolveRequestId
     const m3u8Url = buildXtreamPlaybackUrl(sessionCredentials, 'live', streamId, 'm3u8')
 
     console.info('[LIVE TV] Selected channel playback URL', {
       name: channel.nome,
       streamId,
       url: m3u8Url,
-      action: 'set-selected-channel-only',
+      action: 'resolve-before-playback',
     })
-    setPlaybackDebug({ url: m3u8Url, format: 'm3u8' })
     setSelectedChannel(channel)
+    setResolvedPlaybackUrl('')
+    setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '' })
+
+    if (!m3u8Url) return
+
+    try {
+      const resolvedStream = await resolvePlaybackUrl(m3u8Url)
+      if (resolveRequestIdRef.current !== resolveRequestId) return
+      const finalUrl = resolvedStream.finalUrl || m3u8Url
+      setResolvedPlaybackUrl(finalUrl)
+      setPlaybackDebug({
+        url: finalUrl,
+        format: 'm3u8',
+        originalUrl: resolvedStream.originalUrl || m3u8Url,
+        finalUrl,
+        statusCode: resolvedStream.statusCode ?? '',
+        contentType: resolvedStream.contentType || '',
+      })
+    } catch (error) {
+      if (resolveRequestIdRef.current !== resolveRequestId) return
+      setPlaybackDebug((currentDebug) => ({
+        ...currentDebug,
+        errorSource: 'resolve-stream',
+        errorDetail: error.message,
+      }))
+    }
   }
 
   function toggleChannelFavorite(channel, event) {
@@ -389,7 +440,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={activePlaybackUrl} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
+          <HlsPlayer url={playerPlaybackUrl} title={activeChannel?.nome || 'Player LIVE TV'} onPlaybackUrlChange={updatePlaybackDebug} />
           <div className="live-player-info">
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
@@ -404,6 +455,10 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <code>formato solicitado: /live/username/password/stream_id.m3u8</code>
               <code>URL solicitada: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL real .m3u8: {activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <code>URL original: {playbackDebug.originalUrl || activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
+              <code>URL final resolvida: {playbackDebug.finalUrl || 'aguardando redirect/token'}</code>
+              <code>statusCode: {playbackDebug.statusCode || 'aguardando resposta'}</code>
+              <code>contentType: {playbackDebug.contentType || 'aguardando resposta'}</code>
               <code>em uso agora: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
               {playbackDebug.failedUrl && <code>última URL que falhou: {playbackDebug.failedUrl}</code>}
               {playbackDebug.errorSource && <code>erro do player: {playbackDebug.errorSource} - {playbackDebug.errorDetail}</code>}
