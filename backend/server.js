@@ -8,11 +8,23 @@ const SERVICE_NAME = 'pxt-player-api';
 const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 10000);
 
 const defaultAllowedOrigins = [
+  process.env.FRONTEND_ORIGIN,
+  'https://stupendous-bombolone-32f796.netlify.app',
   'http://localhost:5173',
   'http://localhost:3000',
   'https://stupendous-bombolone-32f796.netlify.app',
 ];
 
+const allowedOrigins = [
+  ...defaultAllowedOrigins,
+  ...(process.env.CORS_ORIGIN || '').split(','),
+]
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || isAllowedOrigin(origin)) {
 const configuredAllowedOrigins = [
   process.env.CORS_ORIGIN,
   process.env.FRONTEND_ORIGIN,
@@ -33,6 +45,10 @@ const corsOptions = {
       return;
     }
 
+    callback(null, false);
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
     callback(new Error('Origin not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -122,6 +138,19 @@ app.use((err, _req, res, _next) => {
 
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
+
+function isAllowedOrigin(origin) {
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch (_error) {
+    return false;
+  }
+}
 
 function normalizeServerUrl(server) {
   const url = new URL(server);
