@@ -51,10 +51,18 @@ function createXtreamStreamUrl({ server, username, password }, path, streamId, e
   const encodedUsername = encodeURIComponent(username)
   const encodedPassword = encodeURIComponent(password)
   const encodedStreamId = encodeURIComponent(streamId)
-  return `${normalizedServer}/${path}/${encodedUsername}/${encodedPassword}/${encodedStreamId}.${extension}`
+  const normalizedExtension = String(extension || '').replace(/^\.+/, '')
+  return `${normalizedServer}/${path}/${encodedUsername}/${encodedPassword}/${encodedStreamId}.${normalizedExtension}`
 }
 
-function createXtreamItem({ item, index, type, groupName, url }) {
+function createXtreamLiveUrls(credentials, streamId) {
+  return {
+    m3u8: createXtreamStreamUrl(credentials, 'live', streamId, 'm3u8'),
+    ts: createXtreamStreamUrl(credentials, 'live', streamId, 'ts'),
+  }
+}
+
+function createXtreamItem({ item, index, type, groupName, url, fallbackUrl = '' }) {
   const name = getByKeys(item, ['name', 'title'], `Item ${index + 1}`)
   const streamId = getByKeys(item, ['stream_id', 'series_id', 'id'])
   const logo = getByKeys(item, ['stream_icon', 'cover', 'cover_big', 'movie_image'])
@@ -65,6 +73,8 @@ function createXtreamItem({ item, index, type, groupName, url }) {
     grupo: groupName || MEDIA_TYPES.OTHERS,
     logo,
     url,
+    fallbackUrl,
+    streamId,
     tipo: type,
     epg: getByKeys(item, ['epg_channel_id']),
     'tvg-id': getByKeys(item, ['epg_channel_id']),
@@ -97,12 +107,14 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
 
   ;(apiData?.liveStreams || []).forEach((stream, index) => {
     const streamId = getByKeys(stream, ['stream_id', 'id'])
+    const liveUrls = createXtreamLiveUrls(normalizedCredentials, streamId)
     addCatalogItem(catalog, createXtreamItem({
       item: stream,
       index,
       type: MEDIA_TYPES.LIVE,
       groupName: liveCategoryMap[getByKeys(stream, ['category_id'])] || getByKeys(stream, ['category_name'], MEDIA_TYPES.LIVE),
-      url: createXtreamStreamUrl(normalizedCredentials, 'live', streamId, 'ts'),
+      url: liveUrls.m3u8,
+      fallbackUrl: liveUrls.ts,
     }))
   })
 
