@@ -46,13 +46,13 @@ const corsOptions = {
   optionsSuccessStatus: 204,
 };
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
-app.use(express.json({ limit: '32kb' }));
-
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: SERVICE_NAME });
 });
+
+app.use('/api', cors(corsOptions));
+app.options('/api/*', cors(corsOptions));
+app.use('/api', express.json({ limit: '32kb' }));
 
 app.post('/api/xtream/validate', async (req, res) => {
   const { server, username, password } = req.body || {};
@@ -121,15 +121,17 @@ app.post('/api/xtream/validate', async (req, res) => {
   }
 });
 
+app.use('/api', (_req, res) => {
+  return res.status(404).json({ ok: false, error: 'API route not found.' });
+});
+
 if (frontendDistPath) {
-  app.use(express.static(frontendDistPath));
+  app.use(express.static(frontendDistPath, {
+    fallthrough: true,
+  }));
 }
 
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) {
-    return res.status(404).json({ ok: false, error: 'API route not found.' });
-  }
-
+app.get('*', (_req, res, next) => {
   if (!frontendDistPath) {
     return res.status(503).json({
       ok: false,
