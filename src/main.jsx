@@ -66,11 +66,30 @@ function saveAccount(account) {
 }
 
 async function fetchPlaylist(account) {
-  const url = buildPlaylistUrl(account)
-  if (!url) throw new Error('missing-fields')
+  if (!buildPlaylistUrl(account)) throw new Error('Preencha servidor, usuário e senha.')
 
-  const response = await fetch(url, { method: 'GET' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const response = await fetch('/.netlify/functions/playlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      server: account.server,
+      username: account.username,
+      password: account.password,
+    }),
+  })
+
+  if (!response.ok) {
+    let errorMessage = `HTTP ${response.status}`
+
+    try {
+      const errorBody = await response.json()
+      errorMessage = errorBody.error || errorMessage
+    } catch {
+      errorMessage = await response.text() || errorMessage
+    }
+
+    throw new Error(errorMessage)
+  }
 
   return response.text()
 }
