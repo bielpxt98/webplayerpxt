@@ -62,21 +62,28 @@ function maskSensitiveUrl(url, password) {
   return url.replaceAll(password.trim(), MASKED_PASSWORD).replaceAll(encodeURIComponent(password.trim()), MASKED_PASSWORD)
 }
 
-function isMaskedPassword(password = '') {
-  return password.trim() === MASKED_PASSWORD
-}
-
-function createSessionCredentials(account, fallbackCredentials = EMPTY_SESSION_CREDENTIALS) {
-  const password = isMaskedPassword(account.password) ? fallbackCredentials.password : account.password
-  return {
-    server: normalizeServer(account.server || fallbackCredentials.server),
-    username: String(account.username || fallbackCredentials.username || '').trim(),
-    password: String(password || '').trim(),
-  }
-}
-
 function hasCompleteCredentials(credentials) {
   return Boolean(credentials.server && credentials.username && credentials.password)
+}
+
+function buildXtreamPlaybackUrl(credentials, path, streamId, extension) {
+  const normalizedServer = normalizeServer(credentials?.server || '')
+  const username = String(credentials?.username || '').trim()
+  const password = String(credentials?.password || '').trim()
+  const normalizedExtension = String(extension || '').replace(/^\.+/, '')
+
+  if (!normalizedServer || !username || !password || !streamId || !normalizedExtension) return ''
+
+  return `${normalizedServer}/${path}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.${normalizedExtension}`
+}
+
+function getPlayableItemUrl(item, credentials) {
+  const streamId = item?.streamId || item?.id
+
+  if (item?.tipo === 'MOVIES') return buildXtreamPlaybackUrl(credentials, 'movie', streamId, 'mp4')
+  if (item?.tipo === 'LIVE TV') return buildXtreamPlaybackUrl(credentials, 'live', streamId, 'm3u8')
+
+  return item?.url || ''
 }
 
 function maskChannelUrl(url) {
@@ -309,19 +316,20 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
     ? selectedChannel
     : null
-  const activePlaybackUrl = activeChannel?.liveUrls?.[playbackFormat] || (playbackFormat === 'ts' ? activeChannel?.fallbackUrl : activeChannel?.url) || ''
-  const activeFallbackUrl = playbackFormat === 'm3u8' ? activeChannel?.liveUrls?.ts || activeChannel?.fallbackUrl || '' : ''
+  const activeStreamId = activeChannel?.streamId || activeChannel?.id
+  const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, playbackFormat) : ''
+  const activeFallbackUrl = playbackFormat === 'm3u8' && activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
 
   function selectChannel(channel) {
     console.info('[LIVE TV] Selected channel playback URL', {
       name: channel.nome,
       streamId: channel.streamId || channel.id,
-      primaryUrl: maskChannelUrl(channel.url),
-      fallbackUrl: maskChannelUrl(channel.fallbackUrl),
+      primaryUrl: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8')),
+      fallbackUrl: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts')),
       availableFormats: {
-        m3u8: maskChannelUrl(channel.liveUrls?.m3u8 || channel.url),
-        ts: maskChannelUrl(channel.liveUrls?.ts || channel.fallbackUrl),
+        m3u8: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8')),
+        ts: maskChannelUrl(buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts')),
       },
     })
     setSelectedChannel(channel)
@@ -534,7 +542,7 @@ function CatalogScreen({ title, icon, items, favorites, onToggleFavorite, onSele
   )
 }
 
-function MoviesScreen({ items, favorites, onToggleFavorite }) {
+function MoviesScreen({ credentials, items, favorites, onToggleFavorite }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
 
   return (
@@ -548,7 +556,7 @@ function MoviesScreen({ items, favorites, onToggleFavorite }) {
       selectedItem={selectedMovie}
       playerTitle={selectedMovie?.nome || ''}
       playerDescription={selectedMovie ? 'Reproduzindo filme selecionado.' : 'Clique em um filme abaixo para iniciar a reprodução.'}
-      playerUrl={selectedMovie?.url || ''}
+      playerUrl={selectedMovie ? getPlayableItemUrl(selectedMovie, credentials) : ''}
     />
   )
 }
@@ -577,7 +585,7 @@ function SeriesScreen({ credentials, items, favorites, onToggleFavorite }) {
 
   const episodes = useMemo(() => normalizeEpisodes(seriesInfo), [seriesInfo])
   const episodeUrl = selectedEpisode
-    ? `${normalizeServer(credentials.server)}/series/${encodeURIComponent(credentials.username.trim())}/${encodeURIComponent(credentials.password.trim())}/${encodeURIComponent(selectedEpisode.id || selectedEpisode.episode_id)}.${getItemContainerExtension({ raw: selectedEpisode })}`
+    ? `${normalizeServer(credentials.server)}/series/${encodeURIComponent(credentials.username.trim())}/${encodeURIComponent(credentials.password.trim())}/${encodeURIComponent(selectedEpisode.id || selectedEpisode.episode_id)}.mp4`
     : ''
 
   const description = loadingInfo
@@ -613,7 +621,7 @@ function SeriesScreen({ credentials, items, favorites, onToggleFavorite }) {
   )
 }
 
-function FavoritesScreen({ favorites, catalogItems, onToggleFavorite, onOpenSeries }) {
+function FavoritesScreen({ credentials, favorites, catalogItems, onToggleFavorite, onOpenSeries }) {
   const catalogByKey = useMemo(() => catalogItems.reduce((accumulator, item) => ({ ...accumulator, [createItemKey(item)]: item }), {}), [catalogItems])
   const favoriteItems = favorites.map((favorite) => catalogByKey[favorite.key] || favorite)
   const [selectedItem, setSelectedItem] = useState(null)
@@ -626,7 +634,7 @@ function FavoritesScreen({ favorites, catalogItems, onToggleFavorite, onOpenSeri
     setSelectedItem(item)
   }
 
-  return <CatalogScreen title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem?.url || ''} playerFallbackUrl={selectedItem?.fallbackUrl || ''} />
+  return <CatalogScreen title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, credentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(credentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} />
 }
 
 function Topbar({ screen, onNavigate }) {
@@ -823,11 +831,11 @@ function App() {
       ) : screen === 'live' ? (
         <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} />
       ) : screen === 'movies' ? (
-        <MoviesScreen items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+        <MoviesScreen credentials={sessionCredentials || getAccountCredentials(account, sessionCredentials)} items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'series' ? (
         <SeriesScreen credentials={sessionCredentials || getAccountCredentials(account, sessionCredentials)} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'favorites' ? (
-        <FavoritesScreen favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} />
+        <FavoritesScreen credentials={sessionCredentials || getAccountCredentials(account, sessionCredentials)} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
