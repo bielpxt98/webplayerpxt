@@ -295,7 +295,7 @@ async function resolvePlaybackUrl(originalUrl) {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
-    body: JSON.stringify({ url: originalUrl }),
+    body: JSON.stringify({ originalUrl }),
   })
   const data = await response.json().catch(() => ({}))
 
@@ -310,7 +310,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
-  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '' })
+  const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '', redirected: '' })
   const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState('')
   const resolveRequestIdRef = useRef(0)
 
@@ -367,22 +367,25 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
     })
     setSelectedChannel(channel)
     setResolvedPlaybackUrl('')
-    setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '' })
+    setPlaybackDebug({ url: m3u8Url, format: 'm3u8', originalUrl: m3u8Url, finalUrl: '', statusCode: '', contentType: '', redirected: '' })
 
     if (!m3u8Url) return
 
     try {
       const resolvedStream = await resolvePlaybackUrl(m3u8Url)
       if (resolveRequestIdRef.current !== resolveRequestId) return
+      const canUseResolvedUrl = resolvedStream.finalUrl && [200, 302].includes(Number(resolvedStream.statusCode))
       const finalUrl = resolvedStream.finalUrl || m3u8Url
-      setResolvedPlaybackUrl(finalUrl)
+      const playbackUrl = canUseResolvedUrl ? finalUrl : m3u8Url
+      setResolvedPlaybackUrl(playbackUrl)
       setPlaybackDebug({
-        url: finalUrl,
+        url: playbackUrl,
         format: 'm3u8',
         originalUrl: resolvedStream.originalUrl || m3u8Url,
         finalUrl,
         statusCode: resolvedStream.statusCode ?? '',
         contentType: resolvedStream.contentType || '',
+        redirected: Boolean(resolvedStream.redirected),
       })
     } catch (error) {
       if (resolveRequestIdRef.current !== resolveRequestId) return
@@ -458,8 +461,9 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
               <code>URL original: {playbackDebug.originalUrl || activePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
               <code>URL final resolvida: {playbackDebug.finalUrl || 'aguardando redirect/token'}</code>
               <code>statusCode: {playbackDebug.statusCode || 'aguardando resposta'}</code>
+              <code>redirected: {playbackDebug.redirected === '' ? 'aguardando resposta' : String(playbackDebug.redirected)}</code>
               <code>contentType: {playbackDebug.contentType || 'aguardando resposta'}</code>
-              <code>em uso agora: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
+              <code>URL em uso no player: {playbackDebug.url ? `${playbackDebug.format} - ${playbackDebug.url}` : 'selecione um canal para gerar a URL'}</code>
               {playbackDebug.failedUrl && <code>última URL que falhou: {playbackDebug.failedUrl}</code>}
               {playbackDebug.errorSource && <code>erro do player: {playbackDebug.errorSource} - {playbackDebug.errorDetail}</code>}
               {hasMaskedLiveUrl && <code>erro: URL ainda está usando senha mascarada</code>}

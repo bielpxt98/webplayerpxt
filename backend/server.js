@@ -110,19 +110,20 @@ app.post('/api/xtream/validate', async (req, res) => {
 
 
 app.post('/api/stream/resolve', async (req, res) => {
-  const { url } = req.body || {};
+  const { originalUrl, url } = req.body || {};
+  const requestedUrl = originalUrl || url;
 
-  if (!url) {
+  if (!requestedUrl) {
     return res.status(400).json({
       ok: false,
-      error: 'url is required.',
+      error: 'originalUrl is required.',
     });
   }
 
   let streamUrl;
 
   try {
-    streamUrl = normalizeStreamUrl(url);
+    streamUrl = normalizeStreamUrl(requestedUrl);
   } catch (_error) {
     return res.status(400).json({
       ok: false,
@@ -220,48 +221,34 @@ app.use((err, _req, res, _next) => {
 
 
 async function resolveStreamRedirect(streamUrl) {
-  try {
-    return await requestStreamHeaders(streamUrl, 'HEAD');
-  } catch (error) {
-    if (!shouldFallbackToRangeGet(error)) {
-      throw error;
-    }
-
-    return requestStreamHeaders(streamUrl, 'GET');
-  }
+  return requestStreamHeaders(streamUrl);
 }
 
-async function requestStreamHeaders(streamUrl, method) {
+async function requestStreamHeaders(streamUrl) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let response;
 
   try {
-    response = await fetch(streamUrl, {
-      method,
+    const response = await fetch(streamUrl, {
+      method: 'GET',
       redirect: 'follow',
       headers: {
         Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
-        ...(method === 'GET' ? { Range: 'bytes=0-0' } : {}),
       },
       signal: controller.signal,
     });
 
-    if (method === 'HEAD' && [403, 405, 501].includes(response.status)) {
-      const error = new Error(`Stream URL HEAD request responded with HTTP ${response.status}.`);
-      error.allowGetFallback = true;
-      throw error;
-    }
+    await response.body?.cancel();
 
-    if (method === 'GET') {
-      await response.body?.cancel();
-    }
+    const originalUrl = streamUrl.toString();
+    const finalUrl = response.url || originalUrl;
 
     return {
-      originalUrl: streamUrl.toString(),
-      finalUrl: response.url || streamUrl.toString(),
+      originalUrl,
+      finalUrl,
       statusCode: response.status,
       contentType: response.headers.get('content-type') || '',
+      redirected: response.redirected || finalUrl !== originalUrl,
     };
   } catch (error) {
     if (!error.status && error?.name !== 'AbortError') {
@@ -271,10 +258,6 @@ async function requestStreamHeaders(streamUrl, method) {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-function shouldFallbackToRangeGet(error) {
-  return error?.name !== 'AbortError' || error?.allowGetFallback;
 }
 
 function normalizeStreamUrl(url) {
