@@ -11,6 +11,25 @@ function getErrorMessage(errorType) {
   return 'Este canal não pôde ser reproduzido agora.'
 }
 
+function getMediaError(video) {
+  return video.error ? {
+    code: video.error.code,
+    message: video.error.message,
+  } : null
+}
+
+async function playVideo(video, context) {
+  try {
+    await video.play()
+    console.debug('[LIVE TV] video.play() resolved', context)
+  } catch (error) {
+    console.error('[LIVE TV] video.play() rejected', {
+      ...context,
+      error,
+    })
+  }
+}
+
 export default function HlsPlayer({ url, fallbackUrl, title }) {
   const videoRef = useRef(null)
   const [activeUrl, setActiveUrl] = useState(url || '')
@@ -39,7 +58,32 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
       return undefined
     }
 
-    const handleCanPlay = () => {
+    const nativeHlsSupport = video.canPlayType('application/vnd.apple.mpegurl')
+    const hlsJsSupport = Hls.isSupported()
+    const isTransportStreamUrl = /\.ts(?:[?#].*)?$/i.test(activeUrl)
+    const shouldUseNativePlayback = Boolean(nativeHlsSupport) || activeUrl === fallbackUrl || isTransportStreamUrl
+    const diagnosticContext = {
+      url: maskDiagnosticUrl(activeUrl),
+      fallbackUrl: maskDiagnosticUrl(fallbackUrl),
+      hlsJsSupport,
+      nativeHlsSupport,
+      shouldUseNativePlayback,
+      isTransportStreamUrl,
+    }
+
+    console.debug('[LIVE TV] HLS playback support', diagnosticContext)
+
+    const logVideoEvent = (event) => {
+      console.debug(`[LIVE TV] video event: ${event.type}`, {
+        ...diagnosticContext,
+        readyState: video.readyState,
+        networkState: video.networkState,
+        currentSrc: maskDiagnosticUrl(video.currentSrc),
+        mediaError: getMediaError(video),
+      })
+    }
+    const handleCanPlay = (event) => {
+      logVideoEvent(event)
       if (isCurrent) setIsLoading(false)
     }
     const tryFallback = () => {
@@ -56,39 +100,56 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
       return false
     }
 
-    const handleError = () => {
+    const handleError = (event) => {
+      logVideoEvent(event)
       if (!isCurrent || tryFallback()) return
       setIsLoading(false)
       console.error('[LIVE TV] Native video playback error', {
-        url: maskDiagnosticUrl(activeUrl),
-        fallbackUrl: maskDiagnosticUrl(fallbackUrl),
-        mediaError: video.error ? {
-          code: video.error.code,
-          message: video.error.message,
-        } : null,
+        ...diagnosticContext,
+        mediaError: getMediaError(video),
       })
       setError('Este canal não pôde ser reproduzido agora.')
     }
 
+    video.addEventListener('loadedmetadata', logVideoEvent)
     video.addEventListener('canplay', handleCanPlay)
     video.addEventListener('playing', handleCanPlay)
     video.addEventListener('error', handleError)
 
-    const isTransportStreamUrl = /\.ts(?:[?#].*)?$/i.test(activeUrl)
-
-    if (video.canPlayType('application/vnd.apple.mpegurl') || activeUrl === fallbackUrl || isTransportStreamUrl) {
+    if (shouldUseNativePlayback) {
       video.src = activeUrl
-    } else if (Hls.isSupported()) {
+      playVideo(video, {
+        ...diagnosticContext,
+        mode: 'native',
+      })
+    } else if (hlsJsSupport) {
       hls = new Hls()
-      hls.loadSource(activeUrl)
-      hls.attachMedia(video)
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+        console.debug('[LIVE TV] Hls.js MANIFEST_PARSED', {
+          ...diagnosticContext,
+          levels: data?.levels?.length,
+          audioTracks: data?.audioTracks?.length,
+          subtitleTracks: data?.subtitleTracks?.length,
+        })
         if (isCurrent) setIsLoading(false)
+        playVideo(video, {
+          ...diagnosticContext,
+          mode: 'hls.js',
+          event: Hls.Events.MANIFEST_PARSED,
+        })
+      })
+      hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+        console.debug('[LIVE TV] Hls.js LEVEL_LOADED', {
+          ...diagnosticContext,
+          level: data?.level,
+          live: data?.details?.live,
+          fragments: data?.details?.fragments?.length,
+          targetduration: data?.details?.targetduration,
+        })
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        console.error('[LIVE TV] HlsPlayer error detail', {
-          url: maskDiagnosticUrl(activeUrl),
-          fallbackUrl: maskDiagnosticUrl(fallbackUrl),
+        console.error('[LIVE TV] Hls.js ERROR', {
+          ...diagnosticContext,
           type: data?.type,
           details: data?.details,
           fatal: data?.fatal,
@@ -100,6 +161,8 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
         setIsLoading(false)
         setError(getErrorMessage(data.type))
       })
+      hls.loadSource(activeUrl)
+      hls.attachMedia(video)
     } else {
       setIsLoading(false)
       setError('Seu navegador não oferece suporte para reprodução HLS.')
@@ -107,6 +170,7 @@ export default function HlsPlayer({ url, fallbackUrl, title }) {
 
     return () => {
       isCurrent = false
+      video.removeEventListener('loadedmetadata', logVideoEvent)
       video.removeEventListener('canplay', handleCanPlay)
       video.removeEventListener('playing', handleCanPlay)
       video.removeEventListener('error', handleError)
