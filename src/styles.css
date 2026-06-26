@@ -685,3 +685,20 @@ input:focus {
     grid-template-columns: 1fr;
   }
 }
+
+
+.series-episodes-wrap {
+  margin-top: 20px;
+}
+
+.episode-button {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
