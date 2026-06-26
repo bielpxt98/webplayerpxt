@@ -72,6 +72,7 @@ function playVideo(video, onPlaybackUrlChange) {
 export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', title, onPlaybackUrlChange }) {
   const videoRef = useRef(null)
   const [fallbackPlaybackUrl, setFallbackPlaybackUrl] = useState('')
+  const [playerStatus, setPlayerStatus] = useState('idle')
   const hlsRef = useRef(null)
   const activeUrlRef = useRef('')
   const retryingFallbackRef = useRef(false)
@@ -108,8 +109,21 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !effectiveUrl) return undefined
+    if (!video) return undefined
 
+    if (!effectiveUrl) {
+      setPlayerStatus('idle')
+      if (hlsRef.current) {
+        hlsRef.current.destroy()
+        hlsRef.current = null
+      }
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+      return undefined
+    }
+
+    setPlayerStatus('loading')
     activeUrlRef.current = effectiveUrl
     retryingFallbackRef.current = false
 
@@ -153,12 +167,14 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         console.info('[HLS PLAYER] MANIFEST_PARSED', getPlaybackSnapshot(video))
+        setPlayerStatus('ready')
         onPlaybackUrlChange?.({ manifestParsed: 'sim', loadedVideoUrl: video.currentSrc || video.src || '' })
         playVideo(video, onPlaybackUrlChange)
       })
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         console.info('[HLS PLAYER] Hls.js error', data)
+        if (data?.fatal) setPlayerStatus('error')
         onPlaybackUrlChange?.({
           errorSource: data?.fatal ? 'hls-fatal' : 'hls-warning',
           errorDetail: `${data?.type || 'unknown'}: ${data?.details || 'sem detalhes'}`,
@@ -203,6 +219,7 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
         return
       }
 
+      setPlayerStatus('error')
       onPlaybackUrlChange?.({
         failedUrl,
         errorSource: fallbackUrl === failedUrl ? 'video-error-final' : 'video-error',
@@ -218,6 +235,9 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
   return (
     <div className="hls-player" aria-live="polite">
       <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} />
+      {playerStatus === 'idle' && <div className="player-overlay">Selecione um item para iniciar</div>}
+      {playerStatus === 'loading' && <div className="player-overlay">Carregando player...</div>}
+      {playerStatus === 'error' && <div className="player-error">Falha na reprodução. Tentando resolver novamente...</div>}
     </div>
   )
 }
