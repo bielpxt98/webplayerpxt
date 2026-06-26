@@ -291,6 +291,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const [selectedChannel, setSelectedChannel] = useState(null)
   const [playbackFormat, setPlaybackFormat] = useState('m3u8')
   const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8' })
+  const [selectedPlayback, setSelectedPlayback] = useState({ channelKey: '', streamId: '', m3u8Url: '', tsUrl: '' })
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -322,27 +323,37 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const playbackCredentialsError = getSessionCredentialsPlaybackError(sessionCredentials)
   const isSessionPasswordMasked = Boolean(sessionCredentials?.password && (isMaskedPassword(sessionCredentials.password) || String(sessionCredentials.password).includes('•')))
-  const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, playbackFormat) : ''
-  const activeFallbackUrl = playbackFormat === 'm3u8' && activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
+  const selectedPlaybackMatchesChannel = activeChannel && selectedPlayback.channelKey === createChannelKey(activeChannel)
+  const activePlaybackUrl = activeChannel ? (selectedPlaybackMatchesChannel ? selectedPlayback[`${playbackFormat}Url`] : '') || buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, playbackFormat) : ''
+  const activeFallbackUrl = playbackFormat === 'm3u8' && activeChannel ? (selectedPlaybackMatchesChannel ? selectedPlayback.tsUrl : '') || buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
   const maskedActivePlaybackUrl = activePlaybackUrl ? maskChannelUrl(activePlaybackUrl) : ''
   const hasMaskedLiveUrl = hasMaskedPasswordInUrl(activePlaybackUrl) || hasMaskedPasswordInUrl(activeFallbackUrl)
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
   }, [])
 
-  function selectChannel(channel) {
+  function selectChannel(channel, event) {
+    event?.preventDefault()
+    event?.stopPropagation()
+
+    const streamId = channel.streamId || channel.id
+    const m3u8Url = buildXtreamPlaybackUrl(sessionCredentials, 'live', streamId, 'm3u8')
+    const tsUrl = buildXtreamPlaybackUrl(sessionCredentials, 'live', streamId, 'ts')
+
     console.info('[LIVE TV] Selected channel playback URL', {
       name: channel.nome,
-      streamId: channel.streamId || channel.id,
-      primaryUrl: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8'),
-      fallbackUrl: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts'),
+      streamId,
+      primaryUrl: m3u8Url,
+      fallbackUrl: tsUrl,
       availableFormats: {
-        m3u8: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8'),
-        ts: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'ts'),
+        m3u8: m3u8Url,
+        ts: tsUrl,
       },
+      action: 'state-only-selection',
     })
     setPlaybackFormat('m3u8')
-    setPlaybackDebug({ url: buildXtreamPlaybackUrl(sessionCredentials, 'live', channel.streamId || channel.id, 'm3u8'), format: 'm3u8' })
+    setPlaybackDebug({ url: m3u8Url, format: 'm3u8' })
+    setSelectedPlayback({ channelKey: createChannelKey(channel), streamId, m3u8Url, tsUrl })
     setSelectedChannel(channel)
   }
 
@@ -448,7 +459,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredential
                   <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channel)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
                     ★
                   </button>
-                  <button className="channel-play-button" type="button" onClick={() => selectChannel(channel)} aria-label={`Reproduzir ${channel.nome}`}>
+                  <button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}>
                     <div className="channel-logo-wrap">
                     {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
                   </div>
