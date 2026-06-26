@@ -268,16 +268,17 @@ function useCatalogSearch({ items, searchIndex = [], searchTerm, filterItem }) {
   const isSearchPending = normalizedInput.length >= MIN_SEARCH_CHARS && normalizedInput !== debouncedSearch
 
   const results = useMemo(() => {
-    const baseItems = filterItem ? items.filter(filterItem) : items
     if (!canSearch) return []
 
-    const indexedResults = (searchIndex.length ? searchIndex : baseItems.map((item) => ({ item, searchable: normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`) })))
+    const searchableIndex = searchIndex.length
+      ? searchIndex
+      : items.map((item) => ({ item, searchable: normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`) }))
+
+    return searchableIndex
       .filter((entry) => (!filterItem || filterItem(entry.item)) && entry.searchable.includes(deferredSearch))
       .slice(0, MAX_SEARCH_RESULTS)
       .map((entry) => entry.item)
-
-    return indexedResults
-  }, [canSearch, deferredSearch, filterItem, items, normalizedInput.length, searchIndex])
+  }, [canSearch, deferredSearch, filterItem, items, searchIndex])
 
   return { results, hasSearchText, canSearch, isSearchPending }
 }
@@ -548,15 +549,17 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
 
   const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : ''
 
-  const hasLiveSearchInput = normalizeSearchText(searchTerm).length > 0
-  const { results: filteredChannels, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
+  const liveSearchFilter = useCallback(() => true, [])
+  const { results: globalChannelResults, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
     items: channels,
     searchIndex,
     searchTerm,
-    filterItem: useCallback((channel) => hasLiveSearchInput || (activeGroup && channel.grupo === activeGroup), [activeGroup, hasLiveSearchInput]),
+    filterItem: liveSearchFilter,
   })
 
   const isLiveSearchActive = canSearch
+  const categoryChannels = useMemo(() => (activeGroup ? channels.filter((channel) => channel.grupo === activeGroup) : []), [activeGroup, channels])
+  const filteredChannels = isLiveSearchActive ? globalChannelResults : categoryChannels
   const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
   const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel)) ? selectedChannel : null
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
@@ -613,6 +616,7 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   }
 
   function openLiveGroup(groupName) {
+    setSearchTerm('')
     setSelectedGroup(groupName)
     pushAppHistoryState({ screen: 'live', view: 'category' })
   }
@@ -709,22 +713,25 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [items])
 
-  const hasCatalogSearchInput = normalizeSearchText(searchTerm).length > 0
-  const { results: filteredItems, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
+  const catalogSearchFilter = useCallback(() => true, [])
+  const { results: globalSearchItems, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
     items,
     searchIndex,
     searchTerm,
-    filterItem: useCallback((item) => hasCatalogSearchInput || !selectedGroup || item.grupo === selectedGroup, [hasCatalogSearchInput, selectedGroup]),
+    filterItem: catalogSearchFilter,
   })
 
 
   const isCatalogSearchActive = canSearch
+  const categoryItems = useMemo(() => (selectedGroup ? items.filter((item) => item.grupo === selectedGroup) : []), [items, selectedGroup])
+  const filteredItems = isCatalogSearchActive ? globalSearchItems : categoryItems
 
   useEffect(() => {
     if (playerUrl || playerFallbackUrl) playerPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [playerFallbackUrl, playerUrl])
 
   function openCatalogGroup(groupName) {
+    setSearchTerm('')
     setSelectedGroup(groupName)
     pushAppHistoryState({ screen: title.toLowerCase(), view: 'category' })
   }
