@@ -92,6 +92,8 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
   }
   const catalog = { ...createEmptyCatalog(), sourceUrl: normalizedCredentials.server, loadedAt: apiData?.fetchedAt || new Date().toISOString() }
   const liveCategoryMap = indexCategories(apiData?.liveCategories)
+  const movieCategoryMap = indexCategories(apiData?.movieCategories)
+  const seriesCategoryMap = indexCategories(apiData?.seriesCategories)
 
   ;(apiData?.liveStreams || []).forEach((stream, index) => {
     const streamId = getByKeys(stream, ['stream_id', 'id'])
@@ -110,7 +112,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
       item: stream,
       index,
       type: MEDIA_TYPES.MOVIES,
-      groupName: getByKeys(stream, ['category_name'], MEDIA_TYPES.MOVIES),
+      groupName: movieCategoryMap[getByKeys(stream, ['category_id'])] || getByKeys(stream, ['category_name'], MEDIA_TYPES.MOVIES),
       url: createXtreamStreamUrl(normalizedCredentials, 'movie', streamId, getMovieExtension(stream)),
     }))
   })
@@ -120,7 +122,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
       item: series,
       index,
       type: MEDIA_TYPES.SERIES,
-      groupName: getByKeys(series, ['category_name'], MEDIA_TYPES.SERIES),
+      groupName: seriesCategoryMap[getByKeys(series, ['category_id'])] || getByKeys(series, ['category_name'], MEDIA_TYPES.SERIES),
       url: '',
     }))
   })
