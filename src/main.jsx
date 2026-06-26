@@ -24,18 +24,16 @@ function normalizeServer(server = '') {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
 }
 
-function buildPlaylistUrl({ server, username, password }) {
+function buildXtreamLoginUrl({ server, username, password }) {
   const normalizedServer = normalizeServer(server)
   if (!normalizedServer || !username.trim() || !password.trim()) return ''
 
   const params = new URLSearchParams({
     username: username.trim(),
     password: password.trim(),
-    type: 'm3u_plus',
-    output: 'ts',
   })
 
-  return `${normalizedServer}/get.php?${params.toString()}`
+  return `${normalizedServer}/player_api.php?${params.toString()}`
 }
 
 function maskSensitiveUrl(url, password) {
@@ -65,8 +63,8 @@ function saveAccount(account) {
   localStorage.removeItem(STORAGE_KEY)
 }
 
-async function fetchPlaylist(account) {
-  if (!buildPlaylistUrl(account)) throw new Error('Preencha servidor, usuário e senha.')
+async function fetchXtreamCatalog(account) {
+  if (!buildXtreamLoginUrl(account)) throw new Error('Preencha servidor, usuário e senha.')
 
   const response = await fetch('/.netlify/functions/playlist', {
     method: 'POST',
@@ -91,7 +89,7 @@ async function fetchPlaylist(account) {
     throw new Error(errorMessage)
   }
 
-  return response.text()
+  return response.json()
 }
 
 
@@ -151,7 +149,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
           <div className="placeholder-icon">📺</div>
           <p className="eyebrow">LIVE TV</p>
           <h2>Nenhuma lista carregada</h2>
-          <p>Conecte sua conta na tela ACCOUNT para o MediaManager organizar os canais ao vivo da lista M3U.</p>
+          <p>Conecte sua conta na tela ACCOUNT para o MediaManager organizar os canais ao vivo da API Xtream.</p>
         </section>
       </main>
     )
@@ -167,7 +165,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
           </div>
           <span className="category-total">{groups.length}</span>
         </div>
-        <div className="group-list" role="list" aria-label="Categorias da lista M3U">
+        <div className="group-list" role="list" aria-label="Categorias da API Xtream">
           {groups.map((group) => (
             <button
               key={group.name}
@@ -258,14 +256,14 @@ function Topbar({ screen, onNavigate }) {
 }
 
 function AccountScreen({ account, setAccount, onConnect, onRefresh, onClear, loading, status }) {
-  const generatedUrl = useMemo(() => buildPlaylistUrl(account), [account])
+  const generatedUrl = useMemo(() => buildXtreamLoginUrl(account), [account])
 
   return (
     <main className="account-page">
       <section className="login-hero">
         <p className="eyebrow">ACCOUNT</p>
         <h1>Entre na sua conta IPTV</h1>
-        <p className="hero-copy">Informe os dados do seu servidor para testar a conexão e carregar a lista M3U autorizada.</p>
+        <p className="hero-copy">Informe os dados do seu servidor para testar a conexão e carregar a API Xtream autorizada.</p>
       </section>
 
       <section className="panel login-card" aria-label="Tela de login">
@@ -289,7 +287,7 @@ function AccountScreen({ account, setAccount, onConnect, onRefresh, onClear, loa
 
         <div className="actions">
           <button className="primary-button" onClick={onConnect} disabled={loading}>{loading ? 'Conectando...' : 'Conectar'}</button>
-          <button className="secondary-button" onClick={onRefresh} disabled={loading}>{loading ? 'Atualizando...' : 'Atualizar Lista'}</button>
+          <button className="secondary-button" onClick={onRefresh} disabled={loading}>{loading ? 'Atualizando...' : 'Atualizar Catálogo'}</button>
           <button className="danger-button" onClick={onClear} disabled={loading}>Limpar Dados</button>
         </div>
 
@@ -341,7 +339,7 @@ function App() {
   const mediaManager = useMediaManager()
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
-    if (!buildPlaylistUrl(account)) {
+    if (!buildXtreamLoginUrl(account)) {
       setStatus({ type: 'error', message: 'Preencha servidor, usuário e senha.' })
       return
     }
@@ -351,8 +349,12 @@ function App() {
 
     try {
       saveAccount(account)
-      const playlistContent = await fetchPlaylist(account)
-      const playlist = mediaManager.loadPlaylist(playlistContent, buildPlaylistUrl(account))
+      const xtreamCatalog = await fetchXtreamCatalog(account)
+      const playlist = mediaManager.loadXtreamCatalog(xtreamCatalog, {
+        server: normalizeServer(account.server),
+        username: account.username,
+        password: account.password,
+      })
       setStatus({ type: 'success', message: `${successMessage}. ${playlist.all.length} itens organizados.` })
     } catch (error) {
       setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
@@ -393,7 +395,7 @@ function App() {
       <Topbar screen={screen} onNavigate={setScreen} />
 
       {screen === 'account' ? (
-        <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Lista atualizada com sucesso')} onClear={clearData} loading={loading} status={status} />
+        <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Catálogo atualizado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
         <LiveTvScreen channels={mediaManager.live} favorites={favoriteChannels} onToggleFavorite={toggleFavoriteChannel} />
       ) : (

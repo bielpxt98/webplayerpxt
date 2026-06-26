@@ -24,6 +24,110 @@ function createEmptyCatalog() {
 
 const MediaManagerContext = createContext(null)
 
+function getByKeys(source, keys, fallback = '') {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim()
+  }
+  return fallback
+}
+
+function indexCategories(categories = []) {
+  return categories.reduce((accumulator, category) => {
+    const id = getByKeys(category, ['category_id', 'id'])
+    const name = getByKeys(category, ['category_name', 'name'], MEDIA_TYPES.OTHERS)
+    if (id) accumulator[id] = name
+    return accumulator
+  }, {})
+}
+
+function getMovieExtension(stream) {
+  return getByKeys(stream, ['container_extension', 'container'], 'mp4').replace(/^\.+/, '') || 'mp4'
+}
+
+function createXtreamStreamUrl({ server, username, password }, path, streamId, extension) {
+  if (!server || !username || !password || !streamId) return ''
+  const normalizedServer = server.replace(/\/+$/, '')
+  const encodedUsername = encodeURIComponent(username)
+  const encodedPassword = encodeURIComponent(password)
+  const encodedStreamId = encodeURIComponent(streamId)
+  return `${normalizedServer}/${path}/${encodedUsername}/${encodedPassword}/${encodedStreamId}.${extension}`
+}
+
+function createXtreamItem({ item, index, type, groupName, url }) {
+  const name = getByKeys(item, ['name', 'title'], `Item ${index + 1}`)
+  const streamId = getByKeys(item, ['stream_id', 'series_id', 'id'])
+  const logo = getByKeys(item, ['stream_icon', 'cover', 'cover_big', 'movie_image'])
+
+  return {
+    id: streamId || `${type.toLowerCase().replace(/\s+/g, '-')}-${index + 1}`,
+    nome: name,
+    grupo: groupName || MEDIA_TYPES.OTHERS,
+    logo,
+    url,
+    tipo: type,
+    epg: getByKeys(item, ['epg_channel_id']),
+    'tvg-id': getByKeys(item, ['epg_channel_id']),
+    'tvg-name': name,
+    'tvg-logo': logo,
+    'group-title': groupName || MEDIA_TYPES.OTHERS,
+    country: getByKeys(item, ['country']),
+    language: getByKeys(item, ['language']),
+    raw: item,
+  }
+}
+
+function addCatalogItem(catalog, item) {
+  const bucket = toBucket(item.tipo)
+  catalog[bucket].push(item)
+  catalog.all.push(item)
+  catalog.groups[item.grupo] = [...(catalog.groups[item.grupo] || []), item]
+}
+
+export function parseXtreamCatalog(apiData, credentials = {}) {
+  const normalizedCredentials = {
+    server: String(credentials.server || apiData?.server || '').replace(/\/+$/, ''),
+    username: String(credentials.username || '').trim(),
+    password: String(credentials.password || '').trim(),
+  }
+  const catalog = { ...createEmptyCatalog(), sourceUrl: normalizedCredentials.server, loadedAt: apiData?.fetchedAt || new Date().toISOString() }
+  const liveCategoryMap = indexCategories(apiData?.liveCategories)
+
+  ;(apiData?.liveStreams || []).forEach((stream, index) => {
+    const streamId = getByKeys(stream, ['stream_id', 'id'])
+    addCatalogItem(catalog, createXtreamItem({
+      item: stream,
+      index,
+      type: MEDIA_TYPES.LIVE,
+      groupName: liveCategoryMap[getByKeys(stream, ['category_id'])] || getByKeys(stream, ['category_name'], MEDIA_TYPES.LIVE),
+      url: createXtreamStreamUrl(normalizedCredentials, 'live', streamId, 'ts'),
+    }))
+  })
+
+  ;(apiData?.vodStreams || []).forEach((stream, index) => {
+    const streamId = getByKeys(stream, ['stream_id', 'id'])
+    addCatalogItem(catalog, createXtreamItem({
+      item: stream,
+      index,
+      type: MEDIA_TYPES.MOVIES,
+      groupName: getByKeys(stream, ['category_name'], MEDIA_TYPES.MOVIES),
+      url: createXtreamStreamUrl(normalizedCredentials, 'movie', streamId, getMovieExtension(stream)),
+    }))
+  })
+
+  ;(apiData?.series || []).forEach((series, index) => {
+    addCatalogItem(catalog, createXtreamItem({
+      item: series,
+      index,
+      type: MEDIA_TYPES.SERIES,
+      groupName: getByKeys(series, ['category_name'], MEDIA_TYPES.SERIES),
+      url: '',
+    }))
+  })
+
+  return catalog
+}
+
 function getAttribute(line, attributeName) {
   const pattern = new RegExp(`${attributeName}="([^"]*)"`, 'i')
   return line.match(pattern)?.[1]?.trim() || ''
@@ -120,11 +224,18 @@ export function MediaManagerProvider({ children }) {
     return parsedCatalog
   }, [])
 
+  const loadXtreamCatalog = useCallback((apiData, credentials = {}) => {
+    const parsedCatalog = parseXtreamCatalog(apiData, credentials)
+    setCatalog(parsedCatalog)
+    return parsedCatalog
+  }, [])
+
   const clearCatalog = useCallback(() => setCatalog(createEmptyCatalog()), [])
 
   const value = useMemo(() => ({
     ...catalog,
     loadPlaylist,
+    loadXtreamCatalog,
     clearCatalog,
     hasPlaylist: catalog.all.length > 0,
     counts: {
@@ -135,7 +246,7 @@ export function MediaManagerProvider({ children }) {
       others: catalog.others.length,
       all: catalog.all.length,
     },
-  }), [catalog, clearCatalog, loadPlaylist])
+  }), [catalog, clearCatalog, loadPlaylist, loadXtreamCatalog])
 
   return <MediaManagerContext.Provider value={value}>{children}</MediaManagerContext.Provider>
 }
