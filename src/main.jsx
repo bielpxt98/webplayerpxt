@@ -7,6 +7,7 @@ import './styles.css'
 const STORAGE_KEY = 'authorized-iptv-player-account'
 const FAVORITES_STORAGE_KEY = 'authorized-iptv-player-favorites'
 const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
+const MASKED_PASSWORD = '••••••'
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
 
 
@@ -25,6 +26,23 @@ function normalizeServer(server = '') {
   const trimmed = server.trim().replace(/\/+$/, '')
   if (!trimmed) return ''
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+}
+
+function isMaskedPassword(password = '') {
+  return String(password).trim() === MASKED_PASSWORD
+}
+
+function getAccountCredentials(account, sessionCredentials = null) {
+  const password = isMaskedPassword(account.password)
+    ? sessionCredentials?.password || ''
+    : account.password
+
+  return {
+    server: account.server,
+    username: account.username,
+    password,
+    remember: account.remember,
+  }
 }
 
 function buildXtreamLoginUrl({ server, username, password }) {
@@ -50,15 +68,15 @@ function maskChannelUrl(url) {
   try {
     const parsedUrl = new URL(url)
     const parts = parsedUrl.pathname.split('/')
-    const liveIndex = parts.findIndex((part) => part.toLowerCase() === 'live')
+    const credentialIndex = parts.findIndex((part) => ['live', 'movie', 'series'].includes(part.toLowerCase()))
 
-    if (liveIndex >= 0 && parts[liveIndex + 2]) {
-      parts[liveIndex + 2] = '••••••'
+    if (credentialIndex >= 0 && parts[credentialIndex + 2]) {
+      parts[credentialIndex + 2] = MASKED_PASSWORD
       parsedUrl.pathname = parts.join('/')
       return parsedUrl.toString()
     }
   } catch {
-    return url.replace(/(\/live\/[^/]+\/)([^/]+)(\/)/i, '$1••••••$3')
+    return url.replace(/(\/(?:live|movie|series)\/[^/]+\/)([^/]+)(\/)/i, `$1${MASKED_PASSWORD}$3`)
   }
 
   return url
@@ -515,7 +533,7 @@ function MoviesScreen({ items, favorites, onToggleFavorite }) {
   )
 }
 
-function SeriesScreen({ account, items, favorites, onToggleFavorite }) {
+function SeriesScreen({ credentials, items, favorites, onToggleFavorite }) {
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [seriesInfo, setSeriesInfo] = useState(null)
   const [selectedEpisode, setSelectedEpisode] = useState(null)
@@ -529,7 +547,7 @@ function SeriesScreen({ account, items, favorites, onToggleFavorite }) {
     setError('')
     setLoadingInfo(true)
     try {
-      setSeriesInfo(await fetchSeriesInfo(account, series.streamId || series.id))
+      setSeriesInfo(await fetchSeriesInfo(credentials, series.streamId || series.id))
     } catch (fetchError) {
       setError(`Erro ao carregar episódios: ${fetchError.message}`)
     } finally {
@@ -539,7 +557,7 @@ function SeriesScreen({ account, items, favorites, onToggleFavorite }) {
 
   const episodes = useMemo(() => normalizeEpisodes(seriesInfo), [seriesInfo])
   const episodeUrl = selectedEpisode
-    ? `${normalizeServer(account.server)}/series/${encodeURIComponent(account.username.trim())}/${encodeURIComponent(account.password.trim())}/${encodeURIComponent(selectedEpisode.id || selectedEpisode.episode_id)}.${getItemContainerExtension({ raw: selectedEpisode })}`
+    ? `${normalizeServer(credentials.server)}/series/${encodeURIComponent(credentials.username.trim())}/${encodeURIComponent(credentials.password.trim())}/${encodeURIComponent(selectedEpisode.id || selectedEpisode.episode_id)}.${getItemContainerExtension({ raw: selectedEpisode })}`
     : ''
 
   const description = loadingInfo
@@ -609,8 +627,8 @@ function Topbar({ screen, onNavigate }) {
   )
 }
 
-function AccountScreen({ account, setAccount, onConnect, onRefresh, onClear, loading, status }) {
-  const generatedUrl = useMemo(() => buildXtreamLoginUrl(account), [account])
+function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onRefresh, onClear, loading, status }) {
+  const generatedUrl = useMemo(() => buildXtreamLoginUrl(getAccountCredentials(account, sessionCredentials)), [account, sessionCredentials])
 
   return (
     <main className="account-page">
@@ -632,12 +650,20 @@ function AccountScreen({ account, setAccount, onConnect, onRefresh, onClear, loa
         <div className="form-grid">
           <label>Servidor (DNS)<input value={account.server} onChange={(event) => setAccount({ ...account, server: event.target.value })} placeholder="dns.exemplo.com:8080" autoComplete="url" /></label>
           <label>Usuário<input value={account.username} onChange={(event) => setAccount({ ...account, username: event.target.value })} placeholder="Seu usuário" autoComplete="username" /></label>
-          <label>Senha<input type="password" value={account.password} onChange={(event) => setAccount({ ...account, password: event.target.value })} placeholder="Sua senha" autoComplete="current-password" /></label>
+          <label>Senha<input type="password" value={account.password} onFocus={() => isMaskedPassword(account.password) && setAccount({ ...account, password: '' })} onChange={(event) => setAccount({ ...account, password: event.target.value })} placeholder="Sua senha" autoComplete="current-password" /></label>
         </div>
 
         <label className="remember-row"><input type="checkbox" checked={account.remember} onChange={(event) => setAccount({ ...account, remember: event.target.checked })} /><span>Lembrar login</span></label>
 
-        {generatedUrl && <p className="hint">URL gerada: <span>{maskSensitiveUrl(generatedUrl, account.password)}</span></p>}
+        {generatedUrl && <p className="hint">URL gerada: <span>{maskSensitiveUrl(generatedUrl, getAccountCredentials(account, sessionCredentials).password)}</span></p>}
+        {sessionCredentials?.password && (
+          <div className="live-url-diagnostic" aria-live="polite">
+            <span>Diagnóstico de credenciais</span>
+            <code>username: OK</code>
+            <code>password: REAL (mascarada apenas na tela)</code>
+            <code>stream_url: construída usando a senha real</code>
+          </div>
+        )}
 
         <div className="actions">
           <button className="primary-button" onClick={onConnect} disabled={loading}>{loading ? 'Conectando...' : 'Conectar'}</button>
@@ -687,13 +713,16 @@ function FooterNavigation({ screen, onNavigate }) {
 function App() {
   const [screen, setScreen] = useState('account')
   const [account, setAccount] = useState(loadSavedAccount)
+  const [sessionCredentials, setSessionCredentials] = useState(null)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
   const [favorites, setFavorites] = useState(loadSavedFavorites)
   const mediaManager = useMediaManager()
 
   async function handleConnection(successMessage = 'Conectado com sucesso') {
-    if (!buildXtreamLoginUrl(account)) {
+    const authCredentials = getAccountCredentials(account, sessionCredentials)
+
+    if (!buildXtreamLoginUrl(authCredentials)) {
       setStatus({ type: 'error', message: 'Preencha servidor, usuário e senha.' })
       return
     }
@@ -702,13 +731,24 @@ function App() {
     setStatus({ type: '', message: '' })
 
     try {
-      saveAccount(account)
-      const responseData = await validateXtreamAccount(account)
+      saveAccount(authCredentials)
+      const responseData = await validateXtreamAccount(authCredentials)
       const catalogPayload = getCatalogPayload(responseData)
       const loadedCatalog = mediaManager.loadXtreamCatalog(catalogPayload, {
-        server: normalizeServer(account.server),
-        username: account.username,
-        password: account.password,
+        server: normalizeServer(authCredentials.server),
+        username: authCredentials.username,
+        password: authCredentials.password,
+      })
+      setSessionCredentials({
+        server: normalizeServer(authCredentials.server),
+        username: authCredentials.username.trim(),
+        password: authCredentials.password.trim(),
+      })
+      setAccount({
+        ...account,
+        server: authCredentials.server,
+        username: authCredentials.username,
+        password: MASKED_PASSWORD,
       })
       const counts = getCatalogCounts(catalogPayload)
       setStatus({
@@ -725,6 +765,7 @@ function App() {
   function clearData() {
     localStorage.removeItem(STORAGE_KEY)
     setAccount(EMPTY_ACCOUNT)
+    setSessionCredentials(null)
     mediaManager.clearCatalog()
     setFavorites([])
     localStorage.removeItem(FAVORITES_STORAGE_KEY)
@@ -758,13 +799,13 @@ function App() {
       <Topbar screen={screen} onNavigate={setScreen} />
 
       {screen === 'account' ? (
-        <AccountScreen account={account} setAccount={setAccount} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
+        <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
         <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'movies' ? (
         <MoviesScreen items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'series' ? (
-        <SeriesScreen account={account} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+        <SeriesScreen credentials={sessionCredentials || getAccountCredentials(account, sessionCredentials)} items={mediaManager.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'favorites' ? (
         <FavoritesScreen favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => setScreen('series')} />
       ) : (
