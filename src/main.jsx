@@ -32,7 +32,7 @@ function buildPlaylistUrl({ server, username, password }) {
     username: username.trim(),
     password: password.trim(),
     type: 'm3u_plus',
-    output: 'hls',
+    output: 'ts',
   })
 
   return `${normalizedServer}/get.php?${params.toString()}`
