@@ -200,6 +200,10 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
         hlsRef.current.destroy()
         hlsRef.current = null
       }
+
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
     }
   }, [effectiveUrl, url, fallbackUrl, contentType, onPlaybackUrlChange])
 
