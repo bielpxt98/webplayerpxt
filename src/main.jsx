@@ -59,7 +59,24 @@ function buildXtreamLoginUrl({ server, username, password }) {
 
 function maskSensitiveUrl(url, password) {
   if (!url || !password) return url
-  return url.replaceAll(password.trim(), '••••••').replaceAll(encodeURIComponent(password.trim()), '••••••')
+  return url.replaceAll(password.trim(), MASKED_PASSWORD).replaceAll(encodeURIComponent(password.trim()), MASKED_PASSWORD)
+}
+
+function isMaskedPassword(password = '') {
+  return password.trim() === MASKED_PASSWORD
+}
+
+function createSessionCredentials(account, fallbackCredentials = EMPTY_SESSION_CREDENTIALS) {
+  const password = isMaskedPassword(account.password) ? fallbackCredentials.password : account.password
+  return {
+    server: normalizeServer(account.server || fallbackCredentials.server),
+    username: String(account.username || fallbackCredentials.username || '').trim(),
+    password: String(password || '').trim(),
+  }
+}
+
+function hasCompleteCredentials(credentials) {
+  return Boolean(credentials.server && credentials.username && credentials.password)
 }
 
 function maskChannelUrl(url) {
@@ -259,7 +276,7 @@ function normalizeEpisodes(seriesInfo) {
   ))
 }
 
-function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
+function LiveTvScreen({ channels, favorites, onToggleFavorite, sessionCredentials }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
@@ -369,6 +386,9 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
             </div>
             <div className="live-url-diagnostic" aria-live="polite">
               <span>Diagnóstico temporário LIVE TV</span>
+              <code>username: {sessionCredentials?.username ? 'OK' : 'ausente'}</code>
+              <code>password: {sessionCredentials?.password ? 'REAL (mascarada apenas na tela)' : 'ausente'}</code>
+              <code>stream_url: {activePlaybackUrl ? 'construída usando a senha real' : 'selecione um canal para gerar a URL'}</code>
               <code>stream_id: {activeChannel?.streamId || activeChannel?.id || 'nenhum canal selecionado'}</code>
               <code>formato: /live/username/password/stream_id.{playbackFormat}</code>
               <code>URL: {maskedActivePlaybackUrl || 'selecione um canal para gerar a URL'}</code>
@@ -801,7 +821,7 @@ function App() {
       {screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
+        <LiveTvScreen channels={mediaManager.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} />
       ) : screen === 'movies' ? (
         <MoviesScreen items={mediaManager.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} />
       ) : screen === 'series' ? (
