@@ -7,10 +7,15 @@ function getErrorMessage(errorType) {
   return 'Este canal não pôde ser reproduzido agora.'
 }
 
-export default function HlsPlayer({ url, title }) {
+export default function HlsPlayer({ url, fallbackUrl, title }) {
   const videoRef = useRef(null)
+  const [activeUrl, setActiveUrl] = useState(url || '')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    setActiveUrl(url || '')
+  }, [url])
 
   useEffect(() => {
     const video = videoRef.current
@@ -20,12 +25,12 @@ export default function HlsPlayer({ url, title }) {
     let isCurrent = true
 
     setError('')
-    setIsLoading(Boolean(url))
+    setIsLoading(Boolean(activeUrl))
     video.pause()
     video.removeAttribute('src')
     video.load()
 
-    if (!url) {
+    if (!activeUrl) {
       setIsLoading(false)
       return undefined
     }
@@ -33,8 +38,19 @@ export default function HlsPlayer({ url, title }) {
     const handleCanPlay = () => {
       if (isCurrent) setIsLoading(false)
     }
+    const tryFallback = () => {
+      const canFallback = fallbackUrl && activeUrl !== fallbackUrl
+      if (canFallback) {
+        console.warn('[LIVE TV] Primary .m3u8 failed; trying .ts fallback.')
+        setActiveUrl(fallbackUrl)
+        return true
+      }
+
+      return false
+    }
+
     const handleError = () => {
-      if (!isCurrent) return
+      if (!isCurrent || tryFallback()) return
       setIsLoading(false)
       setError('Este canal não pôde ser reproduzido agora.')
     }
@@ -43,17 +59,18 @@ export default function HlsPlayer({ url, title }) {
     video.addEventListener('playing', handleCanPlay)
     video.addEventListener('error', handleError)
 
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = url
+    if (video.canPlayType('application/vnd.apple.mpegurl') || activeUrl === fallbackUrl) {
+      video.src = activeUrl
     } else if (Hls.isSupported()) {
       hls = new Hls()
-      hls.loadSource(url)
+      hls.loadSource(activeUrl)
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (isCurrent) setIsLoading(false)
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!isCurrent || !data?.fatal) return
+        if (tryFallback()) return
         setIsLoading(false)
         setError(getErrorMessage(data.type))
       })
@@ -72,7 +89,7 @@ export default function HlsPlayer({ url, title }) {
       video.removeAttribute('src')
       video.load()
     }
-  }, [url])
+  }, [activeUrl, fallbackUrl])
 
   return (
     <div className="hls-player" aria-live="polite">

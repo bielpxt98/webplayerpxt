@@ -224,11 +224,15 @@ async function buildXtreamCatalog({ apiUrl, initialData }) {
     }
   });
 
-  return normalizeXtreamCatalog({
+  const catalog = normalizeXtreamCatalog({
     ...initialData,
     ...supplementalData,
     fetchedAt: new Date().toISOString(),
   });
+
+  logMaskedLivePlaybackUrls({ apiUrl, liveStreams: catalog.liveStreams });
+
+  return catalog;
 }
 
 function normalizeXtreamCatalog(data = {}) {
@@ -282,6 +286,30 @@ function normalizeXtreamCatalog(data = {}) {
     server_info: data.server_info || null,
     fetchedAt: data.fetchedAt || new Date().toISOString(),
   };
+}
+
+
+function createMaskedXtreamLiveUrl(apiUrl, streamId, extension) {
+  if (!streamId) return '';
+
+  const baseUrl = new URL(apiUrl);
+  const username = baseUrl.searchParams.get('username') || '';
+  const maskedPassword = '••••••';
+  const normalizedBase = `${baseUrl.protocol}//${baseUrl.host}`;
+  return `${normalizedBase}/live/${encodeURIComponent(username)}/${maskedPassword}/${encodeURIComponent(streamId)}.${extension}`;
+}
+
+function logMaskedLivePlaybackUrls({ apiUrl, liveStreams }) {
+  const firstLiveStream = Array.isArray(liveStreams) ? liveStreams.find((stream) => stream?.stream_id || stream?.id) : null;
+  const streamId = firstLiveStream?.stream_id || firstLiveStream?.id;
+
+  if (!streamId) return;
+
+  console.info('[LIVE TV] Xtream playback URL format', {
+    streamId: String(streamId),
+    primaryUrl: createMaskedXtreamLiveUrl(apiUrl, streamId, 'm3u8'),
+    fallbackUrl: createMaskedXtreamLiveUrl(apiUrl, streamId, 'ts'),
+  });
 }
 
 function firstArray(...candidates) {

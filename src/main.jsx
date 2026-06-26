@@ -43,6 +43,26 @@ function maskSensitiveUrl(url, password) {
   return url.replaceAll(password.trim(), '••••••').replaceAll(encodeURIComponent(password.trim()), '••••••')
 }
 
+function maskChannelUrl(url) {
+  if (!url) return ''
+
+  try {
+    const parsedUrl = new URL(url)
+    const parts = parsedUrl.pathname.split('/')
+    const liveIndex = parts.findIndex((part) => part.toLowerCase() === 'live')
+
+    if (liveIndex >= 0 && parts[liveIndex + 2]) {
+      parts[liveIndex + 2] = '••••••'
+      parsedUrl.pathname = parts.join('/')
+      return parsedUrl.toString()
+    }
+  } catch {
+    return url.replace(/(\/live\/[^/]+\/)([^/]+)(\/)/i, '$1••••••$3')
+  }
+
+  return url
+}
+
 function loadSavedAccount() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY))
@@ -158,6 +178,16 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
     ? selectedChannel
     : null
 
+  function selectChannel(channel) {
+    console.info('[LIVE TV] Selected channel playback URL', {
+      name: channel.nome,
+      streamId: channel.streamId || channel.id,
+      primaryUrl: maskChannelUrl(channel.url),
+      fallbackUrl: maskChannelUrl(channel.fallbackUrl),
+    })
+    setSelectedChannel(channel)
+  }
+
   if (!channels.length) {
     return (
       <main className="placeholder-wrap">
@@ -198,7 +228,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
 
       <section className="panel channel-panel">
         <div className="live-player-card">
-          <HlsPlayer url={activeChannel?.url || ''} title={activeChannel?.nome || 'Player LIVE TV'} />
+          <HlsPlayer url={activeChannel?.url || ''} fallbackUrl={activeChannel?.fallbackUrl || ''} title={activeChannel?.nome || 'Player LIVE TV'} />
           <div className="live-player-info">
             <p className="eyebrow">Player LIVE TV</p>
             <h3>{activeChannel?.nome || 'Selecione um canal'}</h3>
@@ -234,7 +264,7 @@ function LiveTvScreen({ channels, favorites, onToggleFavorite }) {
                   <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(channelKey)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>
                     ★
                   </button>
-                  <button className="channel-play-button" type="button" onClick={() => setSelectedChannel(channel)} aria-label={`Reproduzir ${channel.nome}`}>
+                  <button className="channel-play-button" type="button" onClick={() => selectChannel(channel)} aria-label={`Reproduzir ${channel.nome}`}>
                     <div className="channel-logo-wrap">
                     {channel.logo ? <img src={channel.logo} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}
                   </div>
