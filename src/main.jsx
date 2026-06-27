@@ -2,6 +2,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
+import { XtreamService } from './services/XtreamService.js'
 import './styles.css'
 
 const STORAGE_KEY = 'authorized-iptv-player-account'
@@ -54,7 +55,7 @@ function proxyExternalAssetUrl(url) {
 
 
 const navigationItems = [
-  { id: 'live', title: 'LIVE TV', subtitle: 'Canais ao vivo', icon: '📺' },
+  { id: 'live', title: 'TV AO VIVO', subtitle: 'Categorias ao vivo', icon: '📺' },
   { id: 'movies', title: 'MOVIES', subtitle: 'Filmes', icon: '🎬' },
   { id: 'series', title: 'SERIES', subtitle: 'Séries', icon: '▣' },
   { id: 'favorites', title: 'FAVORITES', subtitle: 'Favoritos', icon: '★' },
@@ -526,6 +527,44 @@ async function resolvePlaybackUrl(originalUrl) {
   }
 
   return data
+}
+
+
+function LiveCategoriesScreen({ categories, loading, error, onBack }) {
+  return (
+    <main className="section-home" aria-label="Categorias de TV AO VIVO">
+      <section className="panel section-home-panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">TV AO VIVO</p>
+            <h2>Categorias</h2>
+          </div>
+          <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+        </div>
+
+        {loading ? (
+          <div className="loading-state" role="status" aria-live="polite">
+            <span className="loading-spinner" aria-hidden="true" />
+            <p>Carregando categorias de TV ao vivo...</p>
+          </div>
+        ) : error ? (
+          <p className="empty">Não foi possível carregar as categorias agora. {error}</p>
+        ) : categories.length > 0 ? (
+          <div className="category-grid live-category-grid" role="list" aria-label="Categorias de TV AO VIVO">
+            {categories.map((category) => (
+              <button key={category.id} type="button" className="category-card" aria-label={`Categoria ${category.name}`}>
+                <span>📺</span>
+                <strong>{category.name}</strong>
+                <small>Categoria ao vivo</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="empty">Nenhuma categoria de TV ao vivo foi encontrada para esta conta.</p>
+        )}
+      </section>
+    </main>
+  )
 }
 
 function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack }) {
@@ -1146,6 +1185,8 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState({ type: '', message: '' })
   const [favorites, setFavorites] = useState(loadSavedFavorites)
+  const [liveCategoriesLoading, setLiveCategoriesLoading] = useState(false)
+  const [liveCategoriesError, setLiveCategoriesError] = useState('')
   const mediaManager = useMediaManager()
   const isConnected = Boolean(sessionCredentials)
 
@@ -1156,6 +1197,7 @@ function App() {
       localStorage.removeItem(STORAGE_KEY)
       setSessionCredentials(null)
       mediaManager.clearCatalog()
+      setLiveCategoriesError('')
       setAccount(EMPTY_ACCOUNT)
       setScreen('account')
       setStatus({ type: 'error', message: 'Sessão expirada após 6 horas. Faça login novamente.' })
@@ -1173,6 +1215,24 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+
+  async function loadLiveCategories(credentials) {
+    if (!hasCompleteSessionCredentials(credentials)) return []
+
+    setLiveCategoriesLoading(true)
+    setLiveCategoriesError('')
+
+    try {
+      const responseData = await XtreamService.getLiveCategories(credentials)
+      const categories = mediaManager.loadLiveCategories(responseData?.categories || responseData || [])
+      return categories
+    } catch (error) {
+      setLiveCategoriesError(error.message)
+      return []
+    } finally {
+      setLiveCategoriesLoading(false)
+    }
+  }
 
   async function handleConnection(successMessage = 'Conectado com sucesso', credentialsOverride = null) {
     const formCredentials = credentialsOverride || getAccountCredentials(account)
@@ -1198,11 +1258,13 @@ function App() {
         username: authCredentials.username,
         password: realPassword,
       })
-      setSessionCredentials({
+      const normalizedCredentials = {
         server: normalizeServer(authCredentials.server),
         username: authCredentials.username.trim(),
         password: realPassword,
-      })
+      }
+      setSessionCredentials(normalizedCredentials)
+      await loadLiveCategories(normalizedCredentials)
       setAccount({
         ...account,
         server: authCredentials.server,
@@ -1227,6 +1289,7 @@ function App() {
     setAccount(EMPTY_ACCOUNT)
     setSessionCredentials(null)
     mediaManager.clearCatalog()
+    setLiveCategoriesError('')
     setFavorites([])
     localStorage.removeItem(FAVORITES_STORAGE_KEY)
     setStatus({ type: 'success', message: 'Dados removidos deste navegador.' })
@@ -1290,6 +1353,8 @@ function App() {
       ) : screen === 'home' ? (
         <HomeScreen loading={loading} onNavigate={navigateScreen} />
       ) : screen === 'live' ? (
+        <LiveCategoriesScreen categories={mediaManager.liveCategories} loading={liveCategoriesLoading} error={liveCategoriesError} onBack={() => navigateScreen('home')} />
+      ) : screen === 'live-player' ? (
         <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => navigateScreen('home')} />
       ) : screen === 'movies' ? (
         <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} />
