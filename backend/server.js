@@ -111,44 +111,6 @@ app.post('/api/xtream/validate', async (req, res) => {
 
 
 
-app.post('/api/xtream/live-categories', async (req, res) => {
-  const { server, username, password } = req.body || {};
-
-  if (!server || !username || !password) {
-    return res.status(400).json({
-      ok: false,
-      error: 'server, username and password are required.',
-    });
-  }
-
-  let apiUrl;
-
-  try {
-    apiUrl = new URL('/player_api.php', normalizeServerUrl(server));
-    apiUrl.searchParams.set('username', username);
-    apiUrl.searchParams.set('password', password);
-    apiUrl.searchParams.set('action', 'get_live_categories');
-  } catch (_error) {
-    return res.status(400).json({
-      ok: false,
-      error: 'server must be a valid http or https URL.',
-    });
-  }
-
-  try {
-    const categories = await fetchXtreamJson(apiUrl);
-    return res.json({ ok: true, categories: Array.isArray(categories) ? categories : [] });
-  } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(error?.status || (isAbort ? 504 : 502)).json({
-      ok: false,
-      error: error?.publicMessage || (isAbort
-        ? 'Xtream API request timed out.'
-        : 'Could not load live categories from Xtream API.'),
-    });
-  }
-});
-
 
 app.get('/api/stream-proxy', async (req, res) => {
   const requestedUrl = req.query?.url;
