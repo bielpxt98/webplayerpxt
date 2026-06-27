@@ -1271,38 +1271,3 @@ input:focus {
 @keyframes search-spin {
   to { transform: rotate(360deg); }
 }
-
-.loading-state {
-  display: grid;
-  justify-items: center;
-  gap: 16px;
-  padding: clamp(32px, 7vw, 72px);
-  color: #cfefff;
-  text-align: center;
-}
-
-.loading-spinner,
-.search-spinner {
-  display: inline-block;
-  width: 34px;
-  height: 34px;
-  border: 3px solid rgba(117, 217, 255, .22);
-  border-top-color: #75d9ff;
-  border-radius: 50%;
-  animation: spin .85s linear infinite;
-}
-
-.search-spinner {
-  width: 14px;
-  height: 14px;
-  margin-right: 8px;
-  vertical-align: -2px;
-}
-
-.live-category-grid .category-card {
-  min-height: 180px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}

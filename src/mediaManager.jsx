@@ -11,7 +11,6 @@ export const MEDIA_TYPES = {
 function createEmptyCatalog() {
   return {
     live: [],
-    liveCategories: [],
     movies: [],
     series: [],
     radios: [],
@@ -32,22 +31,6 @@ function getByKeys(source, keys, fallback = '') {
     if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim()
   }
   return fallback
-}
-
-function normalizeCategory(category, index = 0) {
-  const id = getByKeys(category, ['category_id', 'id'], `live-category-${index + 1}`)
-  const name = getByKeys(category, ['category_name', 'name'], `Categoria ${index + 1}`)
-
-  return {
-    id,
-    name,
-    categoryId: id,
-    raw: category || {},
-  }
-}
-
-function normalizeCategories(categories = []) {
-  return Array.isArray(categories) ? categories.map(normalizeCategory) : []
 }
 
 function indexCategories(categories = []) {
@@ -148,7 +131,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
     username: String(credentials.username || '').trim(),
     password: String(credentials.password || '').trim(),
   }
-  const catalog = { ...createEmptyCatalog(), sourceUrl: normalizedCredentials.server, loadedAt: apiData?.fetchedAt || new Date().toISOString(), liveCategories: normalizeCategories(apiData?.liveCategories) }
+  const catalog = { ...createEmptyCatalog(), sourceUrl: normalizedCredentials.server, loadedAt: apiData?.fetchedAt || new Date().toISOString() }
   const liveCategoryMap = indexCategories(apiData?.liveCategories)
   const movieCategoryMap = indexCategories(apiData?.movieCategories)
   const seriesCategoryMap = indexCategories(apiData?.seriesCategories)
@@ -292,16 +275,6 @@ export function MediaManagerProvider({ children }) {
     return parsedCatalog
   }, [])
 
-  const loadLiveCategories = useCallback((categories = []) => {
-    const normalizedCategories = normalizeCategories(categories)
-    setCatalog((currentCatalog) => ({
-      ...currentCatalog,
-      liveCategories: normalizedCategories,
-      loadedAt: currentCatalog.loadedAt || new Date().toISOString(),
-    }))
-    return normalizedCategories
-  }, [])
-
   const clearCatalog = useCallback(() => setCatalog(createEmptyCatalog()), [])
 
   const value = useMemo(() => ({
@@ -312,15 +285,13 @@ export function MediaManagerProvider({ children }) {
     hasPlaylist: catalog.all.length > 0,
     counts: {
       live: catalog.live.length,
-      liveCategories: catalog.liveCategories.length,
       movies: catalog.movies.length,
       series: catalog.series.length,
       radios: catalog.radios.length,
       others: catalog.others.length,
       all: catalog.all.length,
     },
-    loadLiveCategories,
-  }), [catalog, clearCatalog, loadLiveCategories, loadPlaylist, loadXtreamCatalog])
+  }), [catalog, clearCatalog, loadPlaylist, loadXtreamCatalog])
 
   return <MediaManagerContext.Provider value={value}>{children}</MediaManagerContext.Provider>
 }
