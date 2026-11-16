@@ -4,10 +4,11 @@ import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
 import './styles.css'
 
+const DEFAULT_SERVER = 'http://ttvp2.live'
 const STORAGE_KEY = 'authorized-iptv-player-account'
 const FAVORITES_STORAGE_KEY = 'authorized-iptv-player-favorites'
 const SESSION_DURATION_MS = 6 * 60 * 60 * 1000
-const EMPTY_ACCOUNT = { server: '', username: '', password: '', remember: true }
+const EMPTY_ACCOUNT = { server: DEFAULT_SERVER, username: '', password: '', remember: true }
 const MASKED_PASSWORD = '••••••'
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '')
 
@@ -1045,36 +1046,93 @@ function Topbar({ screen, onNavigate }) {
 }
 
 function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onRefresh, onClear, loading, status }) {
-
   return (
     <main className="account-page">
+      <div className="login-bg-watermark" aria-hidden="true">
+        <span className="watermark-brand">PXT</span>
+        <span className="watermark-sub">PLAYER</span>
+      </div>
+
       <section className="login-hero">
-        <p className="eyebrow">ACCOUNT</p>
-        <h1>Entre na sua conta IPTV</h1>
-        <p className="hero-copy">Informe os dados do seu servidor para testar a conexão e carregar a API Xtream autorizada.</p>
+        <div className="pxt-brand-badge">
+          <div className="pxt-logo-icon">
+            <svg width="42" height="42" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="48" height="48" rx="14" fill="url(#pxtGrad)" />
+              <path d="M19 15L33 24L19 33V15Z" fill="#FFFFFF" />
+              <defs>
+                <linearGradient id="pxtGrad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#00C0FF" />
+                  <stop offset="1" stopColor="#0055FF" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div>
+            <span className="pxt-logo-title">PXT PLAYER</span>
+            <span className="pxt-logo-slogan">Sua melhor experiência em streaming</span>
+          </div>
+        </div>
+        <p className="eyebrow">PORTAL DE ACESSO</p>
+        <h1>Entre na sua conta</h1>
+        <p className="hero-copy">Assista seus canais ao vivo, filmes e séries favoritos com alta estabilidade e reprodução instantânea.</p>
       </section>
 
       <section className="panel login-card" aria-label="Tela de login">
         <div className="login-card-header">
           <div>
-            <p className="eyebrow">Login seguro</p>
-            <h2>Conectar servidor</h2>
+            <p className="eyebrow">Acesso Exclusivo</p>
+            <h2>Entrar</h2>
           </div>
-          <div className="account-orb">👤</div>
+          <div className="account-orb">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+          </div>
         </div>
 
-        <div className="form-grid">
-          <label>Servidor (DNS)<input value={account.server} onChange={(event) => setAccount({ ...account, server: event.target.value })} placeholder="dns.exemplo.com:8080" autoComplete="url" /></label>
-          <label>Usuário<input value={account.username} onChange={(event) => setAccount({ ...account, username: event.target.value })} placeholder="Seu usuário" autoComplete="username" /></label>
-          <label>Senha<input type="password" value={account.password} onFocus={() => isMaskedPassword(account.password) && setAccount({ ...account, password: '' })} onChange={(event) => setAccount({ ...account, password: event.target.value })} placeholder="Sua senha" autoComplete="current-password" /></label>
+        <div className="form-grid-modern">
+          <label>
+            <span>Usuário</span>
+            <input
+              value={account.username}
+              onChange={(event) => setAccount({ ...account, username: event.target.value })}
+              placeholder="Digite seu usuário"
+              autoComplete="username"
+            />
+          </label>
+          <label>
+            <span>Senha</span>
+            <input
+              type="password"
+              value={account.password}
+              onFocus={() => isMaskedPassword(account.password) && setAccount({ ...account, password: '' })}
+              onChange={(event) => setAccount({ ...account, password: event.target.value })}
+              placeholder="Digite sua senha"
+              autoComplete="current-password"
+            />
+          </label>
         </div>
 
-        <label className="remember-row"><input type="checkbox" checked={account.remember} onChange={(event) => setAccount({ ...account, remember: event.target.checked })} /><span>Lembrar login</span></label>
+        <label className="remember-row">
+          <input
+            type="checkbox"
+            checked={account.remember}
+            onChange={(event) => setAccount({ ...account, remember: event.target.checked })}
+          />
+          <span>Lembrar meu login neste dispositivo</span>
+        </label>
 
-        <div className="actions">
-          <button className="primary-button" onClick={onConnect} disabled={loading}>{loading ? 'Conectando...' : 'Conectar'}</button>
-          <button className="secondary-button" onClick={onRefresh} disabled={loading}>{loading ? 'Atualizando...' : 'Atualizar Catálogo'}</button>
-          <button className="danger-button" onClick={onClear} disabled={loading}>Limpar Dados</button>
+        <div className="actions login-actions-row">
+          <button className="primary-button btn-connect-full" onClick={onConnect} disabled={loading}>
+            {loading ? 'Conectando...' : 'Entrar no Player'}
+          </button>
+          <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+            {loading ? 'Atualizando...' : 'Recarregar'}
+          </button>
+          <button className="danger-button" onClick={onClear} disabled={loading}>
+            Limpar
+          </button>
         </div>
 
         {status.message && <p className={`status ${status.type}`}>{status.message}</p>}

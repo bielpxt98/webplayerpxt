@@ -158,19 +158,169 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(280px, .9fr) minmax(320px, 1.1fr);
-  gap: clamp(24px, 5vw, 64px);
-  max-width: 1180px;
+  grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
+  gap: clamp(28px, 6vw, 72px);
+  max-width: 1100px;
+  min-height: calc(100vh - 140px);
   margin: 0 auto;
   align-items: center;
 }
 
+/* Marca d'água no fundo (PXT PLAYER) */
+.login-bg-watermark {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.04;
+  user-select: none;
+}
+
+.watermark-brand {
+  font-size: clamp(12rem, 32vw, 36rem);
+  font-weight: 900;
+  line-height: 0.8;
+  letter-spacing: -0.05em;
+  background: linear-gradient(180deg, #ffffff 0%, rgba(255, 255, 255, 0.1) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.watermark-sub {
+  font-size: clamp(3rem, 8vw, 9rem);
+  font-weight: 800;
+  letter-spacing: 0.4em;
+  color: #ffffff;
+}
+
+/* Badge e Logo PXT */
+.pxt-brand-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 18px 8px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(117, 217, 255, 0.2);
+  border-radius: 999px;
+  backdrop-filter: blur(12px);
+  margin-bottom: 24px;
+}
+
+.pxt-logo-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 4px 12px rgba(0, 192, 255, 0.4));
+}
+
+.pxt-logo-title {
+  display: block;
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #ffffff;
+  line-height: 1.1;
+}
+
+.pxt-logo-slogan {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #75d9ff;
+  letter-spacing: 0.02em;
+}
+
+.login-hero {
+  position: relative;
+  z-index: 1;
+}
+
 .login-hero h1 {
-  margin: 0 0 18px;
-  font-size: clamp(2.35rem, 6vw, 5.4rem);
-  line-height: .92;
-  letter-spacing: -.06em;
-  text-transform: uppercase;
+  margin: 0 0 16px;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  color: #ffffff;
+}
+
+.hero-copy {
+  font-size: 1.05rem;
+  color: #9cb9d3;
+  line-height: 1.6;
+  max-width: 440px;
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  padding: clamp(28px, 4vw, 42px);
+  border-radius: 28px;
+  background: linear-gradient(165deg, rgba(14, 40, 77, 0.88), rgba(6, 18, 38, 0.94));
+  border: 1px solid rgba(117, 217, 255, 0.18);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(24px);
+}
+
+.form-grid-modern {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 22px 0;
+  text-align: left;
+}
+
+.form-grid-modern label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #bde0fe;
+}
+
+.form-grid-modern input {
+  padding: 15px 18px;
+  font-size: 1rem;
+  background: rgba(3, 11, 24, 0.65);
+  border: 1px solid rgba(117, 217, 255, 0.22);
+  border-radius: 14px;
+  color: #ffffff;
+  transition: all 0.25s ease;
+}
+
+.form-grid-modern input:focus {
+  border-color: #00c0ff;
+  background: rgba(3, 11, 24, 0.9);
+  box-shadow: 0 0 0 4px rgba(0, 192, 255, 0.2);
+}
+
+.login-actions-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.btn-connect-full {
+  flex: 2;
+  padding: 14px 24px;
+  font-weight: 700;
+  font-size: 1.05rem;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #00b4d8 0%, #0077b6 100%);
+  box-shadow: 0 8px 24px rgba(0, 180, 216, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.btn-connect-full:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(0, 180, 216, 0.5);
 }
 
 .hero-copy,
