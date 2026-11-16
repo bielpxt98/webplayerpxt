@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 const app = express();
 const PORT = process.env.PORT || 3001;
 const SERVICE_NAME = 'pxt-player-api';
-const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 10000);
+const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 30000);
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 IPTVSmartersPlayer';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDistPath = resolveFrontendDistPath();
@@ -133,6 +134,7 @@ app.get('/api/stream-proxy', async (req, res) => {
   try {
     const proxyHeaders = {
       Accept: req.get('accept') || 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
+      'User-Agent': DEFAULT_USER_AGENT,
     };
 
     const range = req.get('range');
@@ -305,6 +307,7 @@ async function requestStreamHeaders(streamUrl) {
       redirect: 'follow',
       headers: {
         Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
+        'User-Agent': DEFAULT_USER_AGENT,
       },
       signal: controller.signal,
     });
@@ -435,7 +438,10 @@ async function fetchXtreamJson(apiUrl, action) {
   try {
     const xtreamResponse = await fetch(requestUrl, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json, text/plain, */*',
+        'User-Agent': DEFAULT_USER_AGENT,
+      },
       signal: controller.signal,
     });
 
