@@ -437,23 +437,42 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const xtreamResponse = await fetch(requestUrl, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json, text/plain, */*',
-        'User-Agent': DEFAULT_USER_AGENT,
-      },
-      signal: controller.signal,
-    });
+    // Alguns provedores bloqueiam certos User-Agents; tenta alguns antes de desistir.
+    const userAgents = [
+      'IPTVSmarters/1.0',
+      'okhttp/4.9.0',
+      'VLC/3.0.18 LibVLC/3.0.18',
+      DEFAULT_USER_AGENT,
+    ];
+    let lastStatus = 0;
 
-    if (!xtreamResponse.ok) {
-      const error = new Error(`Xtream API responded with HTTP ${xtreamResponse.status}.`);
-      error.status = 502;
-      error.publicMessage = `Xtream API responded with HTTP ${xtreamResponse.status}.`;
-      throw error;
+    for (const userAgent of userAgents) {
+      const xtreamResponse = await fetch(requestUrl, {
+        method: 'GET',
+        headers: {
+          Accept: '*/*',
+          'User-Agent': userAgent,
+        },
+        signal: controller.signal,
+      });
+
+      if (xtreamResponse.ok) {
+        return await xtreamResponse.json();
+      }
+
+      lastStatus = xtreamResponse.status;
+
+      if (lastStatus !== 403) {
+        break;
+      }
     }
 
-    return xtreamResponse.json();
+    const error = new Error(`Xtream API responded with HTTP ${lastStatus}.`);
+    error.status = 502;
+    error.publicMessage = lastStatus === 403
+      ? 'O provedor bloqueou o acesso do servidor (HTTP 403). Provavelmente ele recusa o IP da hospedagem.'
+      : `Xtream API responded with HTTP ${lastStatus}.`;
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
