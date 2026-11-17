@@ -552,6 +552,23 @@ async function fetchSeriesInfo(sessionCredentials, seriesId) {
   const directUrl = buildSeriesInfoUrl(sessionCredentials, seriesId)
   if (!directUrl) throw new Error('Dados da conta ou ID da série ausentes.')
 
+  // 1. Tenta buscar direto pelo navegador do usuário (evita bloqueio 403 de datacenter)
+  try {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 8000)
+    const directRes = await fetch(directUrl, {
+      headers: { Accept: 'application/json, text/plain, */*' },
+      signal: ctrl.signal,
+    })
+    clearTimeout(t)
+    if (directRes.ok) {
+      return await directRes.json()
+    }
+  } catch (err) {
+    console.warn('Tentativa direta de series-info falhou, usando fallback backend...', err.message)
+  }
+
+  // 2. Fallback via backend proxy
   const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/series-info`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -863,7 +880,19 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
       <main className="section-home" aria-label="Categorias de LIVE TV">
         <section className="panel section-home-panel">
           <div className="section-heading compact"><div><p className="eyebrow">Categorias</p><h2>LIVE TV</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div></div>
-          <div className="category-grid" role="list" aria-label="Categorias de TV">{groups.map((group) => <button key={group.name} type="button" className="category-card" onClick={() => openLiveGroup(group.name)}><span>📺</span><strong>{group.name}</strong><small>{group.count} canais</small></button>)}</div>
+          <div className="category-grid" role="list" aria-label="Categorias de TV">
+            {groups.map((group) => (
+              <button key={group.name} type="button" className="category-card" onClick={() => openLiveGroup(group.name)}>
+                <div className="category-card-top">
+                  <span className="category-icon-box">📺</span>
+                  <span className="category-badge">{group.count} {group.count === 1 ? 'canal' : 'canais'}</span>
+                </div>
+                <div className="category-card-bottom">
+                  <strong title={group.name}>{group.name}</strong>
+                </div>
+              </button>
+            ))}
+          </div>
         </section>
       </main>
     )
@@ -1034,13 +1063,20 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
             <div className="detail-actions">{searchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div>
           </div>
           <div className="category-grid" role="list" aria-label={`Categorias de ${title}`}>
-            {groups.map((group) => (
-              <button key={group.name} type="button" className="category-card" onClick={() => openCatalogGroup(group.name)}>
-                <span>{icon}</span>
-                <strong>{group.name}</strong>
-                <small>{group.count} itens</small>
-              </button>
-            ))}
+            {groups.map((group) => {
+              const unit = title === 'MOVIES' ? (group.count === 1 ? 'filme' : 'filmes') : title === 'SERIES' ? (group.count === 1 ? 'série' : 'séries') : 'itens'
+              return (
+                <button key={group.name} type="button" className="category-card" onClick={() => openCatalogGroup(group.name)}>
+                  <div className="category-card-top">
+                    <span className="category-icon-box">{icon}</span>
+                    <span className="category-badge">{group.count} {unit}</span>
+                  </div>
+                  <div className="category-card-bottom">
+                    <strong title={group.name}>{group.name}</strong>
+                  </div>
+                </button>
+              )
+            })}
           </div>
         </section>
       </main>
