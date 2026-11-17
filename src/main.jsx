@@ -130,10 +130,13 @@ function buildXtreamPlaybackUrl(sessionCredentials, path, streamId, extension) {
 function getPlayableItemUrl(item, sessionCredentials) {
   const streamId = item?.streamId || item?.id
 
-  if (item?.tipo === 'MOVIES') return buildXtreamPlaybackUrl(sessionCredentials, 'movie', streamId, 'mp4')
+  if (item?.tipo === 'MOVIES') {
+    const ext = getItemContainerExtension(item)
+    return buildXtreamPlaybackUrl(sessionCredentials, 'movie', streamId, ext)
+  }
   if (item?.tipo === 'LIVE TV') return buildXtreamPlaybackUrl(sessionCredentials, 'live', streamId, 'm3u8')
 
-  return ''
+  return item?.url || ''
 }
 
 function getSavedSession() {
@@ -280,43 +283,52 @@ async function validateXtreamAccount(account) {
   const directLoginUrl = buildXtreamLoginUrl(account)
   if (!directLoginUrl) throw new Error('Preencha servidor, usuário e senha.')
 
-  // 1. Tenta validação direta pelo navegador do usuário (contorna bloqueio por datacenter/EUA)
-  try {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 7000)
-    const directResponse = await fetch(directLoginUrl, {
-      method: 'GET',
-      headers: { Accept: 'application/json, text/plain, */*' },
-      signal: controller.signal,
-    })
-    clearTimeout(timeoutId)
+  // 1. Tenta validação direta pelo navegador do usuário (suporta HTTP puro e contorna bloqueio de datacenter)
+  const candidateUrls = [directLoginUrl]
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && /^http:\/\//i.test(directLoginUrl)) {
+    candidateUrls.push(directLoginUrl.replace(/^http:\/\//i, 'https://'))
+  }
 
-    if (directResponse.ok) {
-      const data = await directResponse.json()
-      const userInfo = data?.user_info || {}
-      if (userInfo.auth === 1 || userInfo.status === 'Active') {
-        const catalog = await fetchDirectXtreamCatalog(account, data)
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 8000)
+      const directResponse = await fetch(candidateUrl, {
+        method: 'GET',
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
 
-        return {
-          ok: true,
-          status: userInfo.status ?? null,
-          auth: userInfo.auth ?? null,
-          username: userInfo.username ?? null,
-          exp_date: userInfo.exp_date ?? null,
-          max_connections: userInfo.max_connections ?? null,
-          active_cons: userInfo.active_cons ?? null,
-          allowed_output_formats: userInfo.allowed_output_formats ?? [],
-          catalog,
+      if (directResponse.ok) {
+        const data = await directResponse.json()
+        const userInfo = data?.user_info || {}
+        if (userInfo.auth === 1 || userInfo.status === 'Active') {
+          const effectiveAccount = candidateUrl.startsWith('https://')
+            ? { ...account, server: normalizeServer(account.server).replace(/^http:\/\//i, 'https://') }
+            : account
+          const catalog = await fetchDirectXtreamCatalog(effectiveAccount, data)
+
+          return {
+            ok: true,
+            status: userInfo.status ?? null,
+            auth: userInfo.auth ?? null,
+            username: userInfo.username ?? null,
+            exp_date: userInfo.exp_date ?? null,
+            max_connections: userInfo.max_connections ?? null,
+            active_cons: userInfo.active_cons ?? null,
+            allowed_output_formats: userInfo.allowed_output_formats ?? [],
+            catalog,
+          }
+        } else if (userInfo.auth === 0) {
+          throw new Error('Usuário ou senha inválidos.')
         }
-      } else if (userInfo.auth === 0) {
-        throw new Error('Usuário ou senha inválidos.')
       }
+    } catch (directErr) {
+      if (directErr.message === 'Usuário ou senha inválidos.') {
+        throw directErr
+      }
+      console.info('Tentativa direta falhou, testando próxima opção...', directErr.message)
     }
-  } catch (directErr) {
-    if (directErr.message === 'Usuário ou senha inválidos.') {
-      throw directErr
-    }
-    console.info('Tentando via backend proxy...', directErr.message)
   }
 
   // 2. Fallback: via Backend API
@@ -746,7 +758,7 @@ async function resolvePlaybackUrl(originalUrl) {
   return { finalUrl: originalUrl, statusCode: 200, redirected: false }
 }
 
-function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack }) {
+function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack, onLogout }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
@@ -793,6 +805,7 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
 
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
+  const activeFallbackTsUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
   const activeCacheKey = activeChannel && activePlaybackUrl ? getPlaybackCacheKey({ type: 'live', streamId: activeStreamId, originalUrl: activePlaybackUrl }) : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
 
@@ -894,6 +907,11 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
         </div>
         <div className="cortex-header-right">
           <button className="cortex-back-btn" type="button" onClick={onBack}>← Voltar</button>
+          {onLogout && (
+            <button className="cortex-logout-btn" type="button" onClick={onLogout} title="Sair da conta">
+              ⏻ Sair
+            </button>
+          )}
         </div>
       </div>
 
@@ -991,7 +1009,7 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
             {activeChannel ? (
               <HlsPlayer
                 url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''}
-                fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''}
+                fallbackUrl={activeFallbackTsUrl ? buildStreamProxyUrl(activeFallbackTsUrl) : ''}
                 contentType={playbackDebug.contentType}
                 title={activeChannel.nome}
                 onPlaybackUrlChange={updatePlaybackDebug}
@@ -1056,6 +1074,7 @@ function CatalogScreen({
   onBack,
   onCategoryBack,
   onPlayerBack,
+  onLogout,
 }) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
@@ -1166,6 +1185,11 @@ function CatalogScreen({
         </div>
         <div className="cortex-header-right">
           <button className="cortex-back-btn" type="button" onClick={onBack}>← Voltar</button>
+          {onLogout && (
+            <button className="cortex-logout-btn" type="button" onClick={onLogout} title="Sair da conta">
+              ⏻ Sair
+            </button>
+          )}
         </div>
       </div>
 
@@ -1428,7 +1452,7 @@ function MediaDetail({
   )
 }
 
-function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack }) {
+function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack, onLogout }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
   const [playingMovie, setPlayingMovie] = useState(null)
   const originalMovieUrl = playingMovie ? getPlayableItemUrl(playingMovie, sessionCredentials) : ''
@@ -1472,12 +1496,13 @@ function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
       playerUrl={moviePlayback.playbackUrl}
       onPlayerBack={() => setPlayingMovie(null)}
       onBack={onBack}
+      onLogout={onLogout}
       onCategoryBack={() => { setSelectedMovie(null); setPlayingMovie(null) }}
     />
   )
 }
 
-function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack }) {
+function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack, onLogout }) {
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [seriesInfo, setSeriesInfo] = useState(null)
   const [selectedSeason, setSelectedSeason] = useState('')
@@ -1621,12 +1646,13 @@ function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
       }
       onPlayerBack={() => setSelectedEpisode(null)}
       onBack={onBack}
+      onLogout={onLogout}
       onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }}
     />
   )
 }
 
-function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggleFavorite, onOpenSeries, onBack }) {
+function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggleFavorite, onOpenSeries, onBack, onLogout }) {
   const catalogByKey = useMemo(() => catalogItems.reduce((accumulator, item) => ({ ...accumulator, [createItemKey(item)]: item }), {}), [catalogItems])
   const favoriteItems = favorites.map((favorite) => catalogByKey[favorite.key] || favorite)
   const [selectedItem, setSelectedItem] = useState(null)
@@ -1657,11 +1683,12 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
       playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''}
       playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''}
       onPlayerBack={() => setSelectedItem(null)}
+      onLogout={onLogout}
     />
   )
 }
 
-function Topbar({ screen, onNavigate }) {
+function Topbar({ screen, onNavigate, onLogout, username }) {
   return (
     <header className="topbar">
       <button className="logo" onClick={() => onNavigate('home')} aria-label="Abrir início">
@@ -1675,11 +1702,33 @@ function Topbar({ screen, onNavigate }) {
           </button>
         ))}
       </nav>
+      <div className="topbar-user-actions">
+        {username && <span className="topbar-username" title="Usuário conectado">👤 {username}</span>}
+        {onLogout && (
+          <button type="button" className="logout-button" onClick={onLogout} title="Sair da conta">
+            ⏻ Sair
+          </button>
+        )}
+      </div>
     </header>
   )
 }
 
 function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onRefresh, onClear, loading, status }) {
+  const isHttpsPage = typeof window !== 'undefined' && window.location.protocol === 'https:'
+  const isHttpError = status.type === 'error' && (
+    status.message.includes('HTTP') ||
+    status.message.includes('403') ||
+    status.message.includes('Failed to fetch') ||
+    status.message.includes('NetworkError')
+  )
+
+  function handleSwitchToHttp() {
+    if (typeof window === 'undefined') return
+    const httpUrl = window.location.href.replace(/^https:/i, 'http:')
+    window.location.href = httpUrl
+  }
+
   return (
     <main className="account-page">
       <div className="login-bg-watermark" aria-hidden="true">
@@ -1770,6 +1819,17 @@ function AccountScreen({ account, setAccount, sessionCredentials, onConnect, onR
         </div>
 
         {status.message && <p className={`status ${status.type}`}>{status.message}</p>}
+
+        {isHttpsPage && isHttpError && (
+          <div className="http-helper-box">
+            <p>
+              <strong>Dica de Conexão Direta (HTTP Puro):</strong> Se o navegador bloquear o servidor IPTV em HTTPS, clique abaixo para tentar abrir em HTTP puro ou permita <em>"Conteúdo inseguro"</em> no ícone ao lado da barra de endereço.
+            </p>
+            <button type="button" className="secondary-button http-switch-btn" onClick={handleSwitchToHttp}>
+              🔓 Abrir em HTTP Puro
+            </button>
+          </div>
+        )}
       </section>
     </main>
   )
@@ -1796,14 +1856,23 @@ function PlaceholderScreen({ title, subtitle, icon, mediaItems = [], total = 0 }
   )
 }
 
-function HomeScreen({ loading, onNavigate }) {
+function HomeScreen({ loading, onNavigate, onLogout, username }) {
   const cards = navigationItems
 
   return (
     <main className="home section-home" aria-label="Tela inicial do catálogo">
       <section className="panel section-home-panel">
-        <p className="eyebrow">Catálogo IPTV</p>
-        <h1>Escolha uma área</h1>
+        <div className="home-panel-header">
+          <div>
+            <p className="eyebrow">Catálogo IPTV {username ? `• ${username}` : ''}</p>
+            <h1>Escolha uma área</h1>
+          </div>
+          {onLogout && (
+            <button type="button" className="logout-button" onClick={onLogout}>
+              ⏻ Sair da Conta
+            </button>
+          )}
+        </div>
         {loading && <p className="catalog-loading">Carregando catálogo...</p>}
         <div className="main-menu">
           {cards.map((item) => (
@@ -1819,7 +1888,7 @@ function HomeScreen({ loading, onNavigate }) {
   )
 }
 
-function FooterNavigation({ screen, onNavigate }) {
+function FooterNavigation({ screen, onNavigate, onLogout }) {
   return (
     <footer className="footer-actions">
       {navigationItems.map((item) => (
@@ -1827,6 +1896,11 @@ function FooterNavigation({ screen, onNavigate }) {
           <span>{item.icon}</span>{item.title}
         </button>
       ))}
+      {onLogout && (
+        <button type="button" className="footer-logout-btn" onClick={onLogout} title="Sair da conta">
+          <span>⏻</span>SAIR
+        </button>
+      )}
     </footer>
   )
 }
@@ -1846,6 +1920,7 @@ function App() {
     if (!saved) return undefined
     const timeoutId = window.setTimeout(() => {
       localStorage.removeItem(STORAGE_KEY)
+      playbackUrlCache.clear()
       setSessionCredentials(null)
       mediaManager.clearCatalog()
       setAccount(EMPTY_ACCOUNT)
@@ -1864,7 +1939,6 @@ function App() {
     handleConnection('Sessão restaurada', restoredCredentials)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
 
   async function handleConnection(successMessage = 'Conectado com sucesso', credentialsOverride = null) {
     const formCredentials = credentialsOverride || getAccountCredentials(account)
@@ -1914,8 +1988,19 @@ function App() {
     }
   }
 
+  function handleLogout() {
+    localStorage.removeItem(STORAGE_KEY)
+    playbackUrlCache.clear()
+    setSessionCredentials(null)
+    mediaManager.clearCatalog()
+    setAccount({ ...EMPTY_ACCOUNT, username: '', password: '' })
+    setStatus({ type: 'success', message: 'Você saiu da conta com sucesso.' })
+    setScreen('account')
+  }
+
   function clearData() {
     localStorage.removeItem(STORAGE_KEY)
+    playbackUrlCache.clear()
     setAccount(EMPTY_ACCOUNT)
     setSessionCredentials(null)
     mediaManager.clearCatalog()
@@ -1975,25 +2060,32 @@ function App() {
   return (
     <div className="app-shell">
       <div className="background-glow" />
-      {isConnected && <Topbar screen={screen} onNavigate={navigateScreen} />}
+      {isConnected && (
+        <Topbar
+          screen={screen}
+          onNavigate={navigateScreen}
+          onLogout={handleLogout}
+          username={sessionCredentials?.username}
+        />
+      )}
 
       {!isConnected || screen === 'account' ? (
         <AccountScreen account={account} setAccount={setAccount} sessionCredentials={sessionCredentials} onConnect={() => handleConnection('Conectado com sucesso')} onRefresh={() => handleConnection('Conectado com sucesso')} onClear={clearData} loading={loading} status={status} />
       ) : screen === 'home' ? (
-        <HomeScreen loading={loading} onNavigate={navigateScreen} />
+        <HomeScreen loading={loading} onNavigate={navigateScreen} onLogout={handleLogout} username={sessionCredentials?.username} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => navigateScreen('home')} />
+        <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
       ) : screen === 'movies' ? (
-        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} />
+        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
       ) : screen === 'series' ? (
-        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} searchIndex={mediaManager.searchIndex.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} />
+        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} searchIndex={mediaManager.searchIndex.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
       ) : screen === 'favorites' ? (
-        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => navigateScreen('series')} onBack={() => navigateScreen('home')} />
+        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => navigateScreen('series')} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
 
-      {isConnected && <FooterNavigation screen={screen} onNavigate={navigateScreen} />}
+      {isConnected && <FooterNavigation screen={screen} onNavigate={navigateScreen} onLogout={handleLogout} />}
     </div>
   )
 }

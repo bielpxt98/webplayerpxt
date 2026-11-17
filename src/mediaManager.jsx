@@ -156,7 +156,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
       index,
       type: MEDIA_TYPES.MOVIES,
       groupName: movieCategoryMap[getByKeys(stream, ['category_id'])] || getByKeys(stream, ['category_name'], MEDIA_TYPES.MOVIES),
-      url: createXtreamStreamUrl(normalizedCredentials, 'movie', streamId, 'mp4'),
+      url: createXtreamStreamUrl(normalizedCredentials, 'movie', streamId, getMovieExtension(stream)),
     }))
   })
 
