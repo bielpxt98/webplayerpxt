@@ -425,15 +425,16 @@ function getRenderServiceOrigin() {
   return `https://${serviceName}.onrender.com`;
 }
 
-async function fetchXtreamJson(apiUrl, action) {
+async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
   const requestUrl = new URL(apiUrl);
 
   if (action) {
     requestUrl.searchParams.set('action', action);
   }
 
+  const timeoutMs = customTimeoutMs || REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const xtreamResponse = await fetch(requestUrl, {
@@ -460,6 +461,18 @@ async function fetchXtreamJson(apiUrl, action) {
 
 async function buildXtreamCatalog({ apiUrl, initialData }) {
   const normalizedFromInitialData = normalizeXtreamCatalog(initialData);
+
+  // Se a resposta inicial já tem categorias ou canais, usa eles diretamente
+  const hasInitialContent =
+    normalizedFromInitialData.liveStreams.length > 0 ||
+    normalizedFromInitialData.liveCategories.length > 0;
+
+  if (hasInitialContent) {
+    return normalizedFromInitialData;
+  }
+
+  // Caso contrário, busca as ações faltantes com timeout curto por requisição (5s)
+  // para evitar travar a validação de login caso o servidor demore para responder listagens
   const missingActions = [
     ['liveCategories', 'get_live_categories'],
     ['movieCategories', 'get_vod_categories'],
@@ -470,13 +483,13 @@ async function buildXtreamCatalog({ apiUrl, initialData }) {
   ].filter(([catalogKey]) => normalizedFromInitialData[catalogKey].length === 0);
 
   const actionResults = await Promise.allSettled(
-    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action)),
+    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action, 5000)),
   );
 
   const supplementalData = {};
 
   actionResults.forEach((result, index) => {
-    if (result.status === 'fulfilled') {
+    if (result.status === 'fulfilled' && result.value) {
       const [catalogKey] = missingActions[index];
       supplementalData[catalogKey] = result.value;
     }
