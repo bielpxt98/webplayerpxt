@@ -512,6 +512,63 @@ function getItemDescription(item, fallback = '') {
   return item?.descricao || item?.description || item?.plot || item?.raw?.plot || item?.raw?.description || item?.raw?.overview || item?.raw?.info?.plot || fallback
 }
 
+function getItemYear(item) {
+  const raw = item?.raw || {}
+  const candidate = raw.year || raw.release_date || raw.releasedate || raw.aired || ''
+  if (candidate) {
+    const match = String(candidate).match(/\b(19\d\d|20\d\d)\b/)
+    if (match) return match[1]
+  }
+  const nameMatch = String(item?.nome || '').match(/\b(19\d\d|20\d\d)\b/)
+  return nameMatch ? nameMatch[1] : ''
+}
+
+function getItemRating(item) {
+  const raw = item?.raw || {}
+  const rating = raw.rating || raw.rating_5based || raw.score || raw.vote_average
+  if (rating && Number(rating) > 0) {
+    const num = Number(rating)
+    return num <= 5 ? (num * 2).toFixed(1) : num.toFixed(1)
+  }
+  return ''
+}
+
+function getItemGenre(item) {
+  const raw = item?.raw || {}
+  return raw.genre || raw.category_name || item?.grupo || ''
+}
+
+function getItemDuration(item) {
+  const raw = item?.raw || {}
+  const duration = raw.duration || raw.episode_run_time || raw.runtime
+  if (!duration) return ''
+  if (String(duration).includes(':')) return duration
+  const mins = parseInt(duration, 10)
+  if (!isNaN(mins) && mins > 0) {
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+  }
+  return ''
+}
+
+function getItemBackdrop(item) {
+  const raw = item?.raw || {}
+  const backdrop = Array.isArray(raw.backdrop_path) ? raw.backdrop_path[0] : (raw.backdrop_path || raw.backdrop || '')
+  return backdrop ? proxyExternalAssetUrl(backdrop) : getItemPoster(item)
+}
+
+function getItemCast(item) {
+  const raw = item?.raw || {}
+  const cast = raw.cast || raw.actors
+  if (!cast) return []
+  if (Array.isArray(cast)) return cast.slice(0, 10).map((a) => typeof a === 'string' ? { name: a, character: '' } : a)
+  if (typeof cast === 'string') {
+    return cast.split(',').map((name) => name.trim()).filter(Boolean).slice(0, 10).map((name) => ({ name, character: '' }))
+  }
+  return []
+}
+
 function createFavoriteSnapshot(item) {
   return {
     key: createItemKey(item),
@@ -693,10 +750,10 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
+  const [isFavoritesOnly, setIsFavoritesOnly] = useState(false)
   const [playbackDebug, setPlaybackDebug] = useState({ url: '', format: 'm3u8', originalUrl: '', finalUrl: '', statusCode: '', contentType: '', redirected: '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '' })
   const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState('')
   const resolveRequestIdRef = useRef(0)
-  const playerPanelRef = useRef(null)
 
   const groups = useMemo(() => {
     const groupMap = channels.reduce((accumulator, channel) => {
@@ -708,10 +765,12 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [channels])
 
-  const activeGroup = selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : ''
+  const activeGroup = isFavoritesOnly
+    ? 'Favoritos'
+    : (selectedGroup && groups.some((group) => group.name === selectedGroup) ? selectedGroup : (groups[0]?.name || ''))
 
   const liveSearchFilter = useCallback(() => true, [])
-  const { results: globalChannelResults, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
+  const { results: globalChannelResults, canSearch } = useCatalogSearch({
     items: channels,
     searchIndex,
     searchTerm,
@@ -719,17 +778,29 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   })
 
   const isLiveSearchActive = canSearch
-  const categoryChannels = useMemo(() => (activeGroup ? channels.filter((channel) => channel.grupo === activeGroup) : []), [activeGroup, channels])
-  const filteredChannels = isLiveSearchActive ? globalChannelResults : categoryChannels
-  const activeGroupTotal = groups.find((group) => group.name === activeGroup)?.count || 0
-  const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel)) ? selectedChannel : null
+
+  const displayedChannels = useMemo(() => {
+    if (isLiveSearchActive) return globalChannelResults
+    if (isFavoritesOnly) {
+      return channels.filter((c) => Boolean(findFavorite(favorites, c)))
+    }
+    return activeGroup ? channels.filter((c) => c.grupo === activeGroup) : []
+  }, [isLiveSearchActive, globalChannelResults, isFavoritesOnly, channels, favorites, activeGroup])
+
+  const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
+    ? selectedChannel
+    : (displayedChannels[0] || null)
+
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
   const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
   const activeCacheKey = activeChannel && activePlaybackUrl ? getPlaybackCacheKey({ type: 'live', streamId: activeStreamId, originalUrl: activePlaybackUrl }) : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
 
+  // Iniciar reprodução do canal ativo automaticamente quando carregar
   useEffect(() => {
-    if (activeChannel) playerPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (activeChannel && (!selectedChannel || createChannelKey(selectedChannel) !== createChannelKey(activeChannel))) {
+      selectChannel(activeChannel)
+    }
   }, [activeChannel])
 
   const updatePlaybackDebug = useCallback((debugInfo) => {
@@ -753,8 +824,6 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     const initialProxyUrl = cachedStream ? buildStreamProxyUrl(cachedStream.finalUrl) : buildStreamProxyUrl(m3u8Url)
 
     setSelectedChannel(channel)
-    setSearchTerm('')
-    pushAppHistoryState({ screen: 'live', view: 'player' })
     setResolvedPlaybackUrl(cachedStream?.finalUrl || '')
     setPlaybackDebug({ url: initialProxyUrl, format: 'm3u8', originalUrl: m3u8Url, finalUrl: cachedStream?.finalUrl || '', statusCode: cachedStream?.statusCode ?? '', contentType: cachedStream?.contentType || '', redirected: cachedStream ? Boolean(cachedStream.redirected) : '', loadedVideoUrl: '', hlsSupported: '', nativeHlsSupport: '', manifestParsed: '', playStatus: '', playError: '', videoError: '', mixedContentFound: /^http:\/\//i.test(m3u8Url) ? 'sim (bloqueado pelo proxy HTTPS)' : 'não', proxyUrl: initialProxyUrl, cacheUsed: cachedStream ? 'sim' : 'não', resolveTimeMs: cachedStream ? 0 : '', playerStartTimeMs: 0 })
     if (!m3u8Url || cachedStream) return
@@ -776,38 +845,15 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     }
   }
 
-  function openLiveGroup(groupName) {
-    setSearchTerm('')
-    setSelectedGroup(groupName)
-    pushAppHistoryState({ screen: 'live', view: 'category' })
-  }
-
-  function closeLivePlayer() {
-    setSelectedChannel(null)
-    setResolvedPlaybackUrl('')
-  }
-
-  useEffect(() => {
-    function handlePopState() {
-      if (selectedChannel) {
-        closeLivePlayer()
-        return
+  function handleFullscreen() {
+    const videoEl = document.querySelector('.cortex-player-wrapper video')
+    if (videoEl) {
+      if (videoEl.requestFullscreen) {
+        videoEl.requestFullscreen()
+      } else if (videoEl.webkitRequestFullscreen) {
+        videoEl.webkitRequestFullscreen()
       }
-      if (activeGroup) {
-        setSelectedGroup('')
-        setSearchTerm('')
-        return
-      }
-      onBack()
     }
-    window.addEventListener('popstate', handlePopState)
-    return () => window.removeEventListener('popstate', handlePopState)
-  }, [activeGroup, selectedChannel, onBack])
-
-  function toggleChannelFavorite(channel, event) {
-    event.preventDefault()
-    event.stopPropagation()
-    onToggleFavorite(channel)
   }
 
   if (!channels.length) {
@@ -820,7 +866,7 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
           <p style={{ margin: '14px 0 24px', lineHeight: 1.6, opacity: 0.9 }}>
             Sua conta conectou com sucesso, mas o servidor IPTV não retornou canais para este usuário.
             <br />
-            Verifique no painel do servidor se há pacotes ou bouquets de canais liberados para esta conta.
+            Verifique no painel do servidor se há pacotes liberados para esta conta.
           </p>
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
             <button className="primary-button" type="button" onClick={() => window.location.reload()}>RECARREGAR</button>
@@ -831,67 +877,189 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     )
   }
 
-  const liveSearchControl = (
-    <label className="search-label">
-      <span>Buscar canal</span>
-      <input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Nome ou categoria" />
-    </label>
-  )
-
-  const liveResultsGrid = (
-    <>
-      <div className="channel-count-row"><span>{filteredChannels.length} canais encontrados</span><span>{favorites.length} favoritos</span><SearchStatus isSearchPending={isSearchPending} /></div>
-      {isSearching && !canSearch ? <p className="empty">Digite pelo menos 2 caracteres para pesquisar.</p> : filteredChannels.length > 0 ? <VirtualizedGrid items={filteredChannels} ariaLabel="Resultados globais de LIVE TV" renderItem={(channel) => { const channelKey = createChannelKey(channel); const quality = getChannelQuality(channel); const isFavorite = Boolean(findFavorite(favorites, channel)); return <article className="channel-card" key={channelKey} onClick={(event) => selectChannel(channel, event)} aria-label={`Canal ${channel.nome}`}><button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={(event) => toggleChannelFavorite(channel, event)} aria-label={isFavorite ? `Remover ${channel.nome} dos favoritos` : `Favoritar ${channel.nome}`}>★</button><button className="channel-play-button" type="button" onClick={(event) => selectChannel(channel, event)} aria-label={`Reproduzir ${channel.nome}`}><div className="channel-logo-wrap">{channel.logo ? <img src={proxyExternalAssetUrl(channel.logo)} alt={`Logo ${channel.nome}`} loading="lazy" /> : <span className="channel-icon">📺</span>}</div><strong title={channel.nome}>{channel.nome}</strong><small title={channel.grupo}>{channel.grupo}</small>{quality && <span className="quality-badge">{quality}</span>}</button></article> }} /> : <p className="empty">Nenhum canal encontrado com a busca atual.</p>}
-    </>
-  )
-
-  if (activeChannel && !isLiveSearchActive) {
-    return (
-      <main className="single-screen" aria-label={`Player do canal ${activeChannel.nome}`} ref={playerPanelRef}>
-        <section className="panel channel-panel player-only-panel">
-          <div className="section-heading compact"><div><p className="eyebrow">Player LIVE TV</p><h2>{activeChannel.nome}</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={closeLivePlayer}>VOLTAR</button></div></div>
-          <div className="live-player-card player-only-card"><HlsPlayer url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''} fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''} contentType={playbackDebug.contentType} title={activeChannel.nome} onPlaybackUrlChange={updatePlaybackDebug} /><div className="live-player-info"><p className="eyebrow">Ao vivo</p><h3>{activeChannel.nome}</h3><p>Reproduzindo o canal selecionado.</p></div></div>
-        </section>
-      </main>
-    )
-  }
-
-  if (!activeGroup && !isLiveSearchActive) {
-    return (
-      <main className="section-home" aria-label="Categorias de LIVE TV">
-        <section className="panel section-home-panel">
-          <div className="section-heading compact"><div><p className="eyebrow">Categorias</p><h2>LIVE TV</h2></div><div className="detail-actions">{liveSearchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div></div>
-          <div className="category-grid" role="list" aria-label="Categorias de TV">
-            {groups.map((group) => (
-              <button key={group.name} type="button" className="category-card" onClick={() => openLiveGroup(group.name)}>
-                <div className="category-card-top">
-                  <span className="category-icon-box">📺</span>
-                  <span className="category-badge">{group.count} {group.count === 1 ? 'canal' : 'canais'}</span>
-                </div>
-                <div className="category-card-bottom">
-                  <strong title={group.name}>{group.name}</strong>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-      </main>
-    )
-  }
+  const isCurrentFav = activeChannel ? Boolean(findFavorite(favorites, activeChannel)) : false
 
   return (
-    <main className="catalog-detail" aria-label={isLiveSearchActive ? 'Busca global de LIVE TV' : `Canais de ${activeGroup}`}>
-      <section className="panel channel-panel">
-        <div className="section-heading"><div><p className="eyebrow">{isLiveSearchActive ? 'Busca global' : activeGroup}</p><h2>{isLiveSearchActive ? 'Resultados em todos os canais' : `${activeGroupTotal} canais na categoria`}</h2></div><div className="detail-actions"><button className="secondary-button" type="button" onClick={() => { setSelectedGroup(''); setSearchTerm('') }}>VOLTAR</button>{liveSearchControl}</div></div>
-        {liveResultsGrid}
-      </section>
+    <main className="cortex-screen" aria-label="TV ao Vivo">
+      {/* Header Superior */}
+      <div className="cortex-header">
+        <div className="cortex-header-left">
+          <h1>TV ao Vivo</h1>
+        </div>
+        <div className="cortex-header-center">
+          <div className="cortex-logo-badge">
+            <span className="logo-icon">▶</span>
+            <span>PXT PLAYER</span>
+          </div>
+        </div>
+        <div className="cortex-header-right">
+          <button className="cortex-back-btn" type="button" onClick={onBack}>← Voltar</button>
+        </div>
+      </div>
+
+      {/* Grid 3 Colunas (Categorias | Canais | Preview Player + EPG) */}
+      <div className="cortex-live-grid">
+        {/* Coluna 1: Categorias */}
+        <section className="cortex-col cortex-col-cats" aria-label="Categorias de canais">
+          <div className="cortex-search-box">
+            <span className="cortex-search-icon">🔍</span>
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Buscar canais"
+            />
+          </div>
+          <div className="cortex-cat-list" role="tablist">
+            <button
+              type="button"
+              className={`cortex-cat-item ${isFavoritesOnly ? 'active' : ''}`}
+              onClick={() => { setIsFavoritesOnly(true); setSelectedGroup(''); setSearchTerm('') }}
+            >
+              <div className="cortex-cat-left">
+                <span className="cortex-cat-icon">★</span>
+                <span className="cortex-cat-name">Favoritos</span>
+              </div>
+              <span className="cortex-cat-badge">{favorites.length}</span>
+            </button>
+            {groups.map((group) => {
+              const isSelected = !isFavoritesOnly && !isLiveSearchActive && activeGroup === group.name
+              return (
+                <button
+                  key={group.name}
+                  type="button"
+                  className={`cortex-cat-item ${isSelected ? 'active' : ''}`}
+                  onClick={() => { setIsFavoritesOnly(false); setSelectedGroup(group.name); setSearchTerm('') }}
+                >
+                  <div className="cortex-cat-left">
+                    <span className="cortex-cat-icon">📺</span>
+                    <span className="cortex-cat-name" title={group.name}>{group.name}</span>
+                  </div>
+                  <span className="cortex-cat-badge">{group.count} canais</span>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        {/* Coluna 2: Lista de Canais */}
+        <section className="cortex-col cortex-col-channels" aria-label="Lista de canais">
+          <div className="cortex-channel-list">
+            {displayedChannels.length === 0 ? (
+              <p className="empty" style={{ padding: '24px', textAlign: 'center' }}>
+                {isLiveSearchActive ? 'Nenhum canal encontrado na busca.' : isFavoritesOnly ? 'Nenhum canal favoritado ainda.' : 'Nenhum canal nesta categoria.'}
+              </p>
+            ) : (
+              displayedChannels.map((channel) => {
+                const isSelected = activeChannel && createChannelKey(channel) === createChannelKey(activeChannel)
+                const isFav = Boolean(findFavorite(favorites, channel))
+                return (
+                  <div
+                    key={createChannelKey(channel)}
+                    className={`cortex-channel-row ${isSelected ? 'active' : ''}`}
+                    onClick={(e) => selectChannel(channel, e)}
+                  >
+                    <div className="cortex-channel-logo">
+                      {channel.logo ? (
+                        <img src={proxyExternalAssetUrl(channel.logo)} alt={channel.nome} loading="lazy" />
+                      ) : (
+                        <span>📺</span>
+                      )}
+                    </div>
+                    <div className="cortex-channel-info">
+                      <strong className="cortex-channel-name" title={channel.nome}>{channel.nome}</strong>
+                    </div>
+                    <button
+                      type="button"
+                      className={`favorite-button ${isFav ? 'active' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); onToggleFavorite(channel) }}
+                      style={{ position: 'static', opacity: isFav ? 1 : 0.4 }}
+                      title={isFav ? 'Remover dos favoritos' : 'Favoritar canal'}
+                    >
+                      ★
+                    </button>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </section>
+
+        {/* Coluna 3: Preview Player & Guia EPG */}
+        <section className="cortex-col cortex-col-preview" aria-label="Prévia e Guia do canal">
+          <div className="cortex-player-wrapper">
+            {activeChannel ? (
+              <HlsPlayer
+                url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''}
+                fallbackUrl={resolvedPlaybackUrl ? buildStreamProxyUrl(resolvedPlaybackUrl) : ''}
+                contentType={playbackDebug.contentType}
+                title={activeChannel.nome}
+                onPlaybackUrlChange={updatePlaybackDebug}
+              />
+            ) : (
+              <div className="cortex-player-placeholder">
+                <span>📺</span>
+                <p>Selecione um canal para assistir</p>
+              </div>
+            )}
+            {activeChannel && (
+              <button
+                type="button"
+                className="cortex-fullscreen-btn"
+                onClick={handleFullscreen}
+                title="Tela Cheia"
+              >
+                ⛶
+              </button>
+            )}
+          </div>
+
+          <div className="cortex-preview-info">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <h3>{activeChannel ? activeChannel.nome : 'Nenhum canal selecionado'}</h3>
+              {activeChannel && (
+                <button
+                  type="button"
+                  className={`cortex-ghost-btn ${isCurrentFav ? 'active' : ''}`}
+                  onClick={(e) => { e.stopPropagation(); onToggleFavorite(activeChannel) }}
+                >
+                  ★ {isCurrentFav ? 'Favoritado' : 'Favoritar'}
+                </button>
+              )}
+            </div>
+
+            <div className="cortex-epg-box">
+              <p>{activeChannel?.epg || 'Sem guia para este canal'}</p>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
   )
 }
 
-function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFavorite, onSelectItem, selectedItem, playerTitle, playerDescription, playerUrl, playerFallbackUrl, detailContent, afterContent, onBack, onCategoryBack, onPlayerBack }) {
+function CatalogScreen({
+  title,
+  icon,
+  items,
+  searchIndex,
+  favorites,
+  onToggleFavorite,
+  onSelectItem,
+  selectedItem,
+  playerTitle,
+  playerDescription,
+  playerUrl,
+  playerFallbackUrl,
+  detailContent,
+  afterContent,
+  onBack,
+  onCategoryBack,
+  onPlayerBack,
+}) {
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
+  const [isFavoritesOnly, setIsFavoritesOnly] = useState(false)
   const playerPanelRef = useRef(null)
 
   const groups = useMemo(() => {
@@ -903,202 +1071,360 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
     return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
   }, [items])
 
+  const activeGroup = isFavoritesOnly
+    ? 'Favoritos'
+    : (selectedGroup && groups.some((g) => g.name === selectedGroup) ? selectedGroup : (groups[0]?.name || ''))
+
   const catalogSearchFilter = useCallback(() => true, [])
-  const { results: globalSearchItems, hasSearchText: isSearching, canSearch, isSearchPending } = useCatalogSearch({
+  const { results: globalSearchItems, canSearch } = useCatalogSearch({
     items,
     searchIndex,
     searchTerm,
     filterItem: catalogSearchFilter,
   })
 
-
   const isCatalogSearchActive = canSearch
-  const categoryItems = useMemo(() => (selectedGroup ? items.filter((item) => item.grupo === selectedGroup) : []), [items, selectedGroup])
-  const filteredItems = isCatalogSearchActive ? globalSearchItems : categoryItems
 
-  useEffect(() => {
-    if (playerUrl || playerFallbackUrl) playerPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [playerFallbackUrl, playerUrl])
-
-  function openCatalogGroup(groupName) {
-    setSearchTerm('')
-    setSelectedGroup(groupName)
-    pushAppHistoryState({ screen: title.toLowerCase(), view: 'category' })
-  }
+  const displayedItems = useMemo(() => {
+    if (isCatalogSearchActive) return globalSearchItems
+    if (isFavoritesOnly) {
+      return items.filter((item) => Boolean(findFavorite(favorites, item)))
+    }
+    return activeGroup ? items.filter((item) => item.grupo === activeGroup) : []
+  }, [isCatalogSearchActive, globalSearchItems, isFavoritesOnly, items, favorites, activeGroup])
 
   function selectCatalogItem(item) {
-    setSearchTerm('')
     onSelectItem(item)
     pushAppHistoryState({ screen: title.toLowerCase(), view: 'detail' })
   }
 
-  function goBackToCategories() {
-    setSelectedGroup('')
-    setSearchTerm('')
-    onCategoryBack?.()
-  }
-
-  useEffect(() => {
-    function handlePopState() {
-      if (playerUrl || playerFallbackUrl) {
-        onPlayerBack?.()
-        return
-      }
-      if (selectedItem) {
-        onCategoryBack?.()
-        return
-      }
-      if (selectedGroup) {
-        goBackToCategories()
-        return
-      }
-      onBack?.()
-    }
-    window.addEventListener('popstate', handlePopState)
-    return () => window.removeEventListener('popstate', handlePopState)
-  }, [onBack, onCategoryBack, onPlayerBack, playerFallbackUrl, playerUrl, selectedGroup, selectedItem])
-
-  if (!items.length) {
+  // Visualização de Player (Filme ou Episódio)
+  if ((playerUrl || playerFallbackUrl) && (selectedItem || playerTitle)) {
     return (
-      <main className="placeholder-wrap">
-        <section className="panel placeholder" style={{ maxWidth: '580px', padding: '36px 28px' }}>
-          <div className="placeholder-icon">{icon}</div>
-          <p className="eyebrow">{title}</p>
-          <h2>Nenhum item disponível</h2>
-          <p style={{ margin: '14px 0 24px', lineHeight: 1.6, opacity: 0.9 }}>
-            Nenhum conteúdo de {title} foi retornado para este usuário pelo servidor IPTV.
-          </p>
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
-            <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+      <main className="cortex-screen" aria-label={`Player de ${playerTitle || title}`} ref={playerPanelRef}>
+        <div className="cortex-header">
+          <div className="cortex-header-left">
+            <h1>{playerTitle || title}</h1>
           </div>
-        </section>
-      </main>
-    )
-  }
-
-  const searchControl = (
-    <label className="search-label"><span>Buscar</span><input className="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Digite nome ou categoria" /></label>
-  )
-
-  const itemsGrid = (
-    <>
-      <div className="channel-count-row"><span>{filteredItems.length} itens encontrados</span><span>{favorites.length} favoritos</span><SearchStatus isSearchPending={isSearchPending} /></div>
-      {isSearching && !canSearch ? <p className="empty">Digite pelo menos 2 caracteres para pesquisar.</p> : filteredItems.length > 0 ? (
-        <VirtualizedGrid className="channel-grid media-card-grid" items={filteredItems} ariaLabel={isCatalogSearchActive ? `Resultados globais de ${title}` : `Itens de ${selectedGroup}`} estimateItemHeight={270} renderItem={(item) => {
-          const itemKey = createItemKey(item)
-          const isFavorite = Boolean(findFavorite(favorites, item))
-          const poster = getItemPoster(item)
-          return (
-            <article className={`channel-card media-card ${selectedItem && createItemKey(selectedItem) === itemKey ? 'active' : ''}`} key={itemKey}>
-              <button className={`favorite-button ${isFavorite ? 'active' : ''}`} type="button" onClick={() => onToggleFavorite(item)} aria-label={isFavorite ? `Remover ${item.nome} dos favoritos` : `Favoritar ${item.nome}`}>★</button>
-              <button className="channel-play-button" type="button" onClick={() => selectCatalogItem(item)} aria-label={`Abrir ${item.nome}`}>
-                <div className="channel-logo-wrap poster-wrap">{poster ? <img src={poster} alt={`Poster ${item.nome}`} loading="lazy" /> : <span className="channel-icon">{icon}</span>}</div>
-                <strong title={item.nome}>{item.nome}</strong>
-                <small title={item.grupo}>{item.grupo}</small>
-              </button>
-            </article>
-          )
-        }} />
-      ) : <p className="empty">Nenhum item encontrado com a busca atual.</p>}
-    </>
-  )
-
-  if ((playerUrl || playerFallbackUrl) && selectedItem && !isCatalogSearchActive) {
-    return (
-      <main className="single-screen" aria-label={`Player de ${playerTitle || title}`} ref={playerPanelRef}>
-        <section className="panel channel-panel player-only-panel">
-          <div className="section-heading compact">
-            <div><p className="eyebrow">Player {title}</p><h2>{playerTitle || title}</h2></div>
-            <div className="detail-actions">{searchControl}<button className="secondary-button" type="button" onClick={onPlayerBack}>VOLTAR</button></div>
-          </div>
-          <div className="live-player-card player-only-card">
-            <HlsPlayer url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''} fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''} title={playerTitle || title} />
-            <div className="live-player-info"><p className="eyebrow">Reprodução</p><h3>{playerTitle || title}</h3><p>{playerDescription || 'Reproduzindo item selecionado.'}</p></div>
-          </div>
-        </section>
-      </main>
-    )
-  }
-
-  if (selectedItem && detailContent && !isCatalogSearchActive) {
-    return (
-      <main className="single-screen" aria-label={`Detalhes de ${selectedItem.nome}`}>
-        <section className="panel channel-panel">
-          <div className="section-heading compact"><div><p className="eyebrow">Busca global</p><h2>{title}</h2></div>{searchControl}</div>
-          {detailContent}
-          {afterContent}
-        </section>
-      </main>
-    )
-  }
-
-  if (!selectedGroup && !isCatalogSearchActive) {
-    return (
-      <main className="section-home" aria-label={`Categorias de ${title}`}>
-        <section className="panel section-home-panel">
-          <div className="section-heading compact">
-            <div>
-              <p className="eyebrow">Categorias</p>
-              <h2>{title}</h2>
+          <div className="cortex-header-center">
+            <div className="cortex-logo-badge">
+              <span className="logo-icon">▶</span>
+              <span>PXT PLAYER</span>
             </div>
-            <div className="detail-actions">{searchControl}<button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></div>
           </div>
-          <div className="category-grid" role="list" aria-label={`Categorias de ${title}`}>
+          <div className="cortex-header-right">
+            <button className="cortex-back-btn" type="button" onClick={onPlayerBack}>← Voltar aos Detalhes</button>
+          </div>
+        </div>
+        <div className="cortex-col" style={{ padding: '16px', borderRadius: '20px' }}>
+          <div className="cortex-player-wrapper" style={{ height: '70vh', minHeight: '440px' }}>
+            <HlsPlayer
+              url={playerUrl ? buildStreamProxyUrl(playerUrl) : ''}
+              fallbackUrl={playerFallbackUrl ? buildStreamProxyUrl(playerFallbackUrl) : ''}
+              title={playerTitle || title}
+            />
+          </div>
+          <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <p className="eyebrow" style={{ color: '#38bdf8' }}>Em reprodução</p>
+              <h2 style={{ margin: '4px 0', fontSize: '1.4rem', color: '#fff' }}>{playerTitle || title}</h2>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: '0.9rem' }}>{playerDescription || 'Reproduzindo item selecionado.'}</p>
+            </div>
+            <button className="cortex-back-btn" type="button" onClick={onPlayerBack}>
+              ← Fechar Player
+            </button>
+          </div>
+        </div>
+      </main>
+    )
+  }
+
+  // Visualização de Detalhes Cinematográficos
+  if (selectedItem && detailContent) {
+    return (
+      <main className="cortex-screen" aria-label={`Detalhes de ${selectedItem.nome}`}>
+        {detailContent}
+        {afterContent}
+      </main>
+    )
+  }
+
+  // Visualização de Vitrine Cortex (Barra Lateral de Categorias + Cards Verticais 2:3)
+  const displayTitle = title === 'MOVIES' ? 'Filmes' : title === 'SERIES' ? 'Séries' : title === 'FAVORITES' ? 'Favoritos' : title
+
+  return (
+    <main className="cortex-screen" aria-label={displayTitle}>
+      <div className="cortex-header">
+        <div className="cortex-header-left">
+          <h1>{displayTitle}</h1>
+        </div>
+        <div className="cortex-header-center">
+          <div className="cortex-logo-badge">
+            <span className="logo-icon">▶</span>
+            <span>PXT PLAYER</span>
+          </div>
+        </div>
+        <div className="cortex-header-right">
+          <button className="cortex-back-btn" type="button" onClick={onBack}>← Voltar</button>
+        </div>
+      </div>
+
+      <div className="cortex-vod-layout">
+        {/* Sidebar de Categorias */}
+        <aside className="cortex-col cortex-vod-sidebar" aria-label={`Categorias de ${displayTitle}`}>
+          <div className="cortex-search-box">
+            <span className="cortex-search-icon">🔍</span>
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Buscar..."
+            />
+          </div>
+          <div className="cortex-cat-list" role="tablist">
+            <button
+              type="button"
+              className={`cortex-cat-item ${isFavoritesOnly ? 'active' : ''}`}
+              onClick={() => { setIsFavoritesOnly(true); setSelectedGroup(''); setSearchTerm('') }}
+            >
+              <div className="cortex-cat-left">
+                <span className="cortex-cat-icon">★</span>
+                <span className="cortex-cat-name">Favoritos</span>
+              </div>
+              <span className="cortex-cat-badge">{favorites.length}</span>
+            </button>
             {groups.map((group) => {
-              const unit = title === 'MOVIES' ? (group.count === 1 ? 'filme' : 'filmes') : title === 'SERIES' ? (group.count === 1 ? 'série' : 'séries') : 'itens'
+              const isSelected = !isFavoritesOnly && !isCatalogSearchActive && activeGroup === group.name
+              const unit = title === 'MOVIES' ? 'filmes' : title === 'SERIES' ? 'séries' : 'itens'
               return (
-                <button key={group.name} type="button" className="category-card" onClick={() => openCatalogGroup(group.name)}>
-                  <div className="category-card-top">
-                    <span className="category-icon-box">{icon}</span>
-                    <span className="category-badge">{group.count} {unit}</span>
+                <button
+                  key={group.name}
+                  type="button"
+                  className={`cortex-cat-item ${isSelected ? 'active' : ''}`}
+                  onClick={() => { setIsFavoritesOnly(false); setSelectedGroup(group.name); setSearchTerm('') }}
+                >
+                  <div className="cortex-cat-left">
+                    <span className="cortex-cat-icon">{icon}</span>
+                    <span className="cortex-cat-name" title={group.name}>{group.name}</span>
                   </div>
-                  <div className="category-card-bottom">
-                    <strong title={group.name}>{group.name}</strong>
-                  </div>
+                  <span className="cortex-cat-badge">{group.count} {unit}</span>
                 </button>
               )
             })}
           </div>
-        </section>
-      </main>
-    )
-  }
+        </aside>
 
-  return (
-    <main className="catalog-detail" aria-label={isCatalogSearchActive ? `Busca global de ${title}` : `Itens de ${selectedGroup}`}>
-      <section className="panel channel-panel">
-        <div className="section-heading">
-          <div><p className="eyebrow">{isCatalogSearchActive ? 'Busca global' : title}</p><h2>{isCatalogSearchActive ? `Resultados em ${title}` : selectedGroup}</h2></div>
-          <div className="detail-actions">
-            <button className="secondary-button" type="button" onClick={goBackToCategories}>VOLTAR</button>
-            {searchControl}
-          </div>
-        </div>
-        {itemsGrid}
-      </section>
+        {/* Grade de Cartazes Verticais 2:3 */}
+        <section className="cortex-vod-content" aria-label={`Lista de ${displayTitle}`}>
+          {displayedItems.length === 0 ? (
+            <p className="empty" style={{ padding: '32px', textAlign: 'center' }}>
+              {isCatalogSearchActive ? 'Nenhum título encontrado na busca.' : isFavoritesOnly ? 'Nenhum título favoritado ainda.' : 'Nenhum item nesta categoria.'}
+            </p>
+          ) : (
+            <div className="cortex-poster-grid">
+              {displayedItems.map((item) => {
+                const itemKey = createItemKey(item)
+                const isFavorite = Boolean(findFavorite(favorites, item))
+                const poster = getItemPoster(item)
+                const year = getItemYear(item)
+                const rating = getItemRating(item)
+                return (
+                  <article
+                    key={itemKey}
+                    className="cortex-poster-card"
+                    onClick={() => selectCatalogItem(item)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="cortex-poster-img-wrap">
+                      {poster ? (
+                        <img src={poster} alt={item.nome} loading="lazy" />
+                      ) : (
+                        <div className="cortex-poster-placeholder">
+                          <span>{icon}</span>
+                        </div>
+                      )}
+                      {rating && <span className="cortex-poster-rating">★ {rating}</span>}
+                      <button
+                        type="button"
+                        className={`favorite-button ${isFavorite ? 'active' : ''}`}
+                        onClick={(e) => { e.stopPropagation(); onToggleFavorite(item) }}
+                        title={isFavorite ? 'Remover dos favoritos' : 'Favoritar'}
+                      >
+                        ★
+                      </button>
+                    </div>
+                    <div className="cortex-poster-info">
+                      <strong title={item.nome}>{item.nome}</strong>
+                      {year && <span className="cortex-poster-year">{year}</span>}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      </div>
     </main>
   )
 }
 
-function MediaDetail({ item, icon, actionLabel, onAction, onBack, children }) {
+function MediaDetail({
+  item,
+  icon,
+  actionLabel = 'Assistir agora',
+  onAction,
+  onBack,
+  onHome,
+  isFavorite = false,
+  onToggleFavorite,
+  relatedItems = [],
+  onSelectRelated,
+  children,
+}) {
   if (!item) return null
+
   const poster = getItemPoster(item)
-  const description = getItemDescription(item, 'Sem descrição disponível para este título.')
+  const backdrop = getItemBackdrop(item)
+  const description = getItemDescription(item, 'Uma excelente produção disponível na sua grade de programação.')
+  const year = getItemYear(item) || '2026'
+  const rating = getItemRating(item) || '7.5'
+  const genre = getItemGenre(item)
+  const duration = getItemDuration(item) || '01:45:00'
+  const cast = getItemCast(item)
 
   return (
-    <section className="media-detail-panel" aria-label={`Detalhes de ${item.nome}`}>
-      <div className="media-detail-poster">{poster ? <img src={poster} alt={`Capa ${item.nome}`} /> : <span>{icon}</span>}</div>
-      <div className="media-detail-copy">
-        <p className="eyebrow">Detalhes</p>
-        <h2>{item.nome}</h2>
-        <p>{description}</p>
-        {children}
-        <div className="detail-actions">
-          {onAction && <button className="primary-button" type="button" onClick={onAction}>{actionLabel}</button>}
-          <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+    <div className="cortex-detail-container">
+      {/* Backdrop wallpaper com efeito blur cinemático */}
+      <div className="cortex-detail-backdrop">
+        {backdrop && (
+          <img
+            src={backdrop}
+            alt=""
+            className="cortex-detail-backdrop-img"
+          />
+        )}
+      </div>
+
+      {/* Top Header */}
+      <div className="cortex-header" style={{ position: 'relative', zIndex: 2 }}>
+        <div className="cortex-header-left">
+          <p className="eyebrow" style={{ color: '#38bdf8', margin: 0 }}>DETALHES</p>
+        </div>
+        <div className="cortex-header-center">
+          <div className="cortex-logo-badge">
+            <span className="logo-icon">▶</span>
+            <span>PXT PLAYER</span>
+          </div>
+        </div>
+        <div className="cortex-header-right">
+          <button className="cortex-back-btn" type="button" onClick={onBack}>← Voltar</button>
         </div>
       </div>
-    </section>
+
+      {/* Hero row */}
+      <div className="cortex-detail-hero">
+        {/* Poster 2:3 vertical */}
+        <div className="cortex-detail-poster">
+          {poster ? (
+            <img src={poster} alt={item.nome} />
+          ) : (
+            <div className="cortex-poster-placeholder"><span>{icon}</span></div>
+          )}
+        </div>
+
+        {/* Informações */}
+        <div className="cortex-detail-info">
+          <h1 className="cortex-detail-title">{item.nome}</h1>
+
+          {/* Badges de Metadados */}
+          <div className="cortex-badges-row">
+            {year && <span className="cortex-badge-pill">{year}</span>}
+            {rating && <span className="cortex-badge-pill rating">★ {rating}</span>}
+            <span className="cortex-badge-pill">L</span>
+            {genre && <span className="cortex-badge-pill">{genre}</span>}
+            {duration && <span className="cortex-badge-pill">{duration}</span>}
+          </div>
+
+          {/* Botões de Ação */}
+          <div className="cortex-actions-row">
+            {onAction && (
+              <button className="cortex-play-btn" type="button" onClick={onAction}>
+                ▶▶ {actionLabel}
+              </button>
+            )}
+            {onToggleFavorite && (
+              <button
+                className={`cortex-ghost-btn ${isFavorite ? 'active' : ''}`}
+                type="button"
+                onClick={onToggleFavorite}
+              >
+                ★ {isFavorite ? 'Favoritado' : 'Favoritar'}
+              </button>
+            )}
+            <button className="cortex-ghost-btn" type="button" onClick={onBack}>
+              ← Voltar
+            </button>
+            {onHome && (
+              <button className="cortex-ghost-btn" type="button" onClick={onHome}>
+                ⌂ Início
+              </button>
+            )}
+          </div>
+
+          {/* Sinopse */}
+          <p className="cortex-synopsis">{description}</p>
+
+          {/* Elenco / Cast */}
+          {cast.length > 0 && (
+            <div className="cortex-cast-row">
+              {cast.map((actor, idx) => (
+                <div key={idx} className="cortex-cast-card">
+                  <div className="cortex-cast-avatar">
+                    {actor.photo ? <img src={actor.photo} alt={actor.name} /> : <span>👤</span>}
+                  </div>
+                  <strong>{actor.name}</strong>
+                  {actor.character && <small>{actor.character}</small>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Conteúdo adicional (ex: Temporadas e Episódios de Séries) */}
+          {children}
+        </div>
+      </div>
+
+      {/* Relacionados na sua lista */}
+      {relatedItems.length > 0 && (
+        <div className="cortex-related-box">
+          <h3>RELACIONADOS NA SUA LISTA</h3>
+          <div className="cortex-related-carousel">
+            {relatedItems.slice(0, 15).map((rel) => {
+              const relPoster = getItemPoster(rel)
+              const relYear = getItemYear(rel)
+              return (
+                <article
+                  key={createItemKey(rel)}
+                  className="cortex-poster-card"
+                  onClick={() => onSelectRelated?.(rel)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="cortex-poster-img-wrap">
+                    {relPoster ? <img src={relPoster} alt={rel.nome} loading="lazy" /> : <div className="cortex-poster-placeholder"><span>{icon}</span></div>}
+                  </div>
+                  <div className="cortex-poster-info">
+                    <strong title={rel.nome}>{rel.nome}</strong>
+                    {relYear && <span className="cortex-poster-year">{relYear}</span>}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1107,9 +1433,15 @@ function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
   const [playingMovie, setPlayingMovie] = useState(null)
   const originalMovieUrl = playingMovie ? getPlayableItemUrl(playingMovie, sessionCredentials) : ''
   const moviePlayback = useResolvedPlaybackUrl({ item: playingMovie, originalUrl: originalMovieUrl })
-  const handleMoviePlaybackDebug = useCallback((debugInfo) => {
-    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) moviePlayback.clearCache()
-  }, [moviePlayback.clearCache])
+
+  const isSelectedFav = selectedMovie ? Boolean(findFavorite(favorites, selectedMovie)) : false
+
+  const relatedMovies = useMemo(() => {
+    if (!selectedMovie) return []
+    return items.filter(
+      (m) => m.grupo === selectedMovie.grupo && createItemKey(m) !== createItemKey(selectedMovie)
+    )
+  }, [items, selectedMovie])
 
   return (
     <CatalogScreen
@@ -1121,7 +1453,20 @@ function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
       onToggleFavorite={onToggleFavorite}
       onSelectItem={(movie) => { setSelectedMovie(movie); setPlayingMovie(null) }}
       selectedItem={selectedMovie}
-      detailContent={<MediaDetail item={selectedMovie} icon="🎬" actionLabel="CONTINUAR / JOGAR" onAction={() => setPlayingMovie(selectedMovie)} onBack={() => { setSelectedMovie(null); setPlayingMovie(null) }} />}
+      detailContent={
+        <MediaDetail
+          item={selectedMovie}
+          icon="🎬"
+          actionLabel="Assistir agora"
+          onAction={() => setPlayingMovie(selectedMovie)}
+          onBack={() => { setSelectedMovie(null); setPlayingMovie(null) }}
+          onHome={onBack}
+          isFavorite={isSelectedFav}
+          onToggleFavorite={() => selectedMovie && onToggleFavorite(selectedMovie)}
+          relatedItems={relatedMovies}
+          onSelectRelated={(rel) => setSelectedMovie(rel)}
+        />
+      }
       playerTitle={playingMovie?.nome || ''}
       playerDescription={playingMovie ? 'Reproduzindo filme selecionado.' : ''}
       playerUrl={moviePlayback.playbackUrl}
@@ -1135,6 +1480,7 @@ function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
 function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack }) {
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [seriesInfo, setSeriesInfo] = useState(null)
+  const [selectedSeason, setSelectedSeason] = useState('')
   const [selectedEpisode, setSelectedEpisode] = useState(null)
   const [loadingInfo, setLoadingInfo] = useState(false)
   const [error, setError] = useState('')
@@ -1143,10 +1489,14 @@ function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
     setSelectedSeries(series)
     setSelectedEpisode(null)
     setSeriesInfo(null)
+    setSelectedSeason('')
     setError('')
     setLoadingInfo(true)
     try {
-      setSeriesInfo(await fetchSeriesInfo(sessionCredentials, series.streamId || series.id))
+      const info = await fetchSeriesInfo(sessionCredentials, series.streamId || series.id)
+      setSeriesInfo(info)
+      const seasons = Object.keys(info?.episodes || {})
+      if (seasons.length > 0) setSelectedSeason(seasons[0])
     } catch (fetchError) {
       setError(`Erro ao carregar episódios: ${fetchError.message}`)
     } finally {
@@ -1154,54 +1504,125 @@ function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
     }
   }
 
-  const episodes = useMemo(() => normalizeEpisodes(seriesInfo), [seriesInfo])
+  const episodesBySeason = seriesInfo?.episodes || {}
+  const seasonKeys = Object.keys(episodesBySeason)
+  const currentSeasonKey = selectedSeason || seasonKeys[0] || '1'
+  const currentEpisodes = Array.isArray(episodesBySeason[currentSeasonKey]) ? episodesBySeason[currentSeasonKey] : []
+
   const episodeUrl = selectedEpisode
     ? buildXtreamPlaybackUrl(sessionCredentials, 'series', selectedEpisode.id || selectedEpisode.episode_id, getItemContainerExtension({ raw: selectedEpisode }))
     : ''
   const episodePlaybackItem = useMemo(() => (selectedEpisode ? { ...selectedEpisode, tipo: 'SERIES', streamId: selectedEpisode.id || selectedEpisode.episode_id } : null), [selectedEpisode])
   const episodePlayback = useResolvedPlaybackUrl({ item: episodePlaybackItem, originalUrl: episodeUrl })
-  const handleEpisodePlaybackDebug = useCallback((debugInfo) => {
-    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) episodePlayback.clearCache()
-  }, [episodePlayback.clearCache])
 
-  const description = loadingInfo
-    ? 'Carregando temporadas e episódios...'
-    : error || (selectedEpisode ? `Temporada ${selectedEpisode.seasonNumber || selectedEpisode.season || ''}` : selectedSeries ? 'Escolha um episódio abaixo.' : 'Clique em uma série para carregar episódios.')
+  const isSelectedFav = selectedSeries ? Boolean(findFavorite(favorites, selectedSeries)) : false
 
-  const episodesPanel = selectedSeries ? (
-    <div className="series-episodes-wrap">
-      <div className="section-heading compact">
-        <div>
-          <p className="eyebrow">Temporadas / Episódios</p>
-          <h2>Escolha um episódio</h2>
-        </div>
-        <span className="category-total">{episodes.length}</span>
-      </div>
-      {loadingInfo && <p>Carregando episódios...</p>}
-      {error && <p className="status error">{error}</p>}
-      {!loadingInfo && !error && episodes.length === 0 && <p>Nenhum episódio encontrado para esta série.</p>}
-      {episodes.length > 0 && (
-        <ul className="episode-list" aria-label="Episódios da série">
-          {episodes.map((episode) => (
-            <li key={`${episode.seasonNumber}-${episode.id || episode.episode_id}`}>
-              <button className={`episode-button ${selectedEpisode && (selectedEpisode.id || selectedEpisode.episode_id) === (episode.id || episode.episode_id) ? 'active' : ''}`} type="button" onClick={() => setSelectedEpisode(episode)}>
-                <span>{episode.title || `Episódio ${episode.episode_num || episode.id}`}</span><small>T{episode.seasonNumber || episode.season || '?'} • {getItemContainerExtension({ raw: episode })}</small>
+  const relatedSeries = useMemo(() => {
+    if (!selectedSeries) return []
+    return items.filter(
+      (s) => s.grupo === selectedSeries.grupo && createItemKey(s) !== createItemKey(selectedSeries)
+    )
+  }, [items, selectedSeries])
+
+  const seriesEpisodesContent = selectedSeries ? (
+    <div className="cortex-seasons-wrap">
+      {/* Abas das Temporadas */}
+      {seasonKeys.length > 0 && (
+        <div className="cortex-seasons-tabs">
+          {seasonKeys.map((seasonNum) => {
+            const seasonLabel = `Temporada ${String(seasonNum).padStart(2, '0')}`
+            return (
+              <button
+                key={seasonNum}
+                type="button"
+                className={`cortex-season-tab ${currentSeasonKey === seasonNum ? 'active' : ''}`}
+                onClick={() => setSelectedSeason(seasonNum)}
+              >
+                {seasonLabel}
               </button>
-            </li>
-          ))}
-        </ul>
+            )
+          })}
+        </div>
+      )}
+
+      {loadingInfo && <p style={{ color: '#38bdf8' }}>Carregando episódios...</p>}
+      {error && <p className="status error">{error}</p>}
+
+      {/* Grade de Episódios 16:9 */}
+      {!loadingInfo && !error && (
+        <div className="cortex-episodes-grid">
+          {currentEpisodes.length === 0 ? (
+            <p className="empty">Nenhum episódio nesta temporada.</p>
+          ) : (
+            currentEpisodes.map((ep, idx) => {
+              const epNum = ep.episode_num || idx + 1
+              const epTitle = ep.title || `Episódio ${epNum}`
+              const epThumb = ep.info?.movie_image || getItemPoster(selectedSeries)
+              return (
+                <article
+                  key={ep.id || ep.episode_id || idx}
+                  className="cortex-episode-card"
+                  onClick={() => setSelectedEpisode(ep)}
+                >
+                  <div className="cortex-episode-thumb-wrap">
+                    {epThumb ? (
+                      <img src={proxyExternalAssetUrl(epThumb)} alt={epTitle} loading="lazy" />
+                    ) : (
+                      <div className="cortex-poster-placeholder"><span>▣</span></div>
+                    )}
+                    <span className="cortex-episode-badge">EP {String(epNum).padStart(2, '0')}</span>
+                    <div className="cortex-episode-play-overlay">
+                      <div className="cortex-episode-play-circle">▶</div>
+                    </div>
+                  </div>
+                  <div className="cortex-episode-info">
+                    <strong title={epTitle}>{epTitle}</strong>
+                    <small>{ep.info?.duration || getItemContainerExtension({ raw: ep })}</small>
+                  </div>
+                </article>
+              )
+            })
+          )}
+        </div>
       )}
     </div>
   ) : null
 
-  const seriesDetail = (
-    <MediaDetail item={selectedSeries} icon="▣" onBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }}>
-      {episodesPanel}
-    </MediaDetail>
-  )
-
   return (
-    <CatalogScreen title="SERIES" icon="▣" items={items} searchIndex={searchIndex} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={selectSeries} selectedItem={selectedSeries} playerTitle={selectedEpisode?.title || ''} playerDescription={description} playerUrl={episodePlayback.playbackUrl} playbackDebug={episodePlayback.debug} onPlaybackUrlChange={handleEpisodePlaybackDebug} isResolving={episodePlayback.resolving} detailContent={seriesDetail} onPlayerBack={() => setSelectedEpisode(null)} onBack={onBack} onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }} />
+    <CatalogScreen
+      title="SERIES"
+      icon="▣"
+      items={items}
+      searchIndex={searchIndex}
+      favorites={favorites}
+      onToggleFavorite={onToggleFavorite}
+      onSelectItem={selectSeries}
+      selectedItem={selectedSeries}
+      playerTitle={selectedEpisode?.title ? `${selectedSeries?.nome} - ${selectedEpisode.title}` : (selectedSeries?.nome || '')}
+      playerDescription={selectedEpisode ? `Temporada ${currentSeasonKey} • Episódio ${selectedEpisode.episode_num || ''}` : ''}
+      playerUrl={episodePlayback.playbackUrl}
+      detailContent={
+        <MediaDetail
+          item={selectedSeries}
+          icon="▣"
+          actionLabel="Assistir 1º Episódio"
+          onAction={() => {
+            if (currentEpisodes.length > 0) setSelectedEpisode(currentEpisodes[0])
+          }}
+          onBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }}
+          onHome={onBack}
+          isFavorite={isSelectedFav}
+          onToggleFavorite={() => selectedSeries && onToggleFavorite(selectedSeries)}
+          relatedItems={relatedSeries}
+          onSelectRelated={(rel) => selectSeries(rel)}
+        >
+          {seriesEpisodesContent}
+        </MediaDetail>
+      }
+      onPlayerBack={() => setSelectedEpisode(null)}
+      onBack={onBack}
+      onCategoryBack={() => { setSelectedSeries(null); setSelectedEpisode(null); setSeriesInfo(null); setError('') }}
+    />
   )
 }
 
@@ -1212,9 +1633,6 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
   const originalFavoriteUrl = selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''
   const originalFavoriteFallbackUrl = selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''
   const favoritePlayback = useResolvedPlaybackUrl({ item: selectedItem, originalUrl: originalFavoriteUrl, fallbackUrl: originalFavoriteFallbackUrl })
-  const handleFavoritePlaybackDebug = useCallback((debugInfo) => {
-    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) favoritePlayback.clearCache()
-  }, [favoritePlayback.clearCache])
 
   function openFavorite(item) {
     if (item.tipo === 'SERIES') {
@@ -1224,7 +1642,23 @@ function FavoritesScreen({ sessionCredentials, favorites, catalogItems, onToggle
     setSelectedItem(item)
   }
 
-  return <CatalogScreen onBack={onBack} title="FAVORITES" icon="★" items={favoriteItems} favorites={favorites} onToggleFavorite={onToggleFavorite} onSelectItem={openFavorite} selectedItem={selectedItem} playerTitle={selectedItem?.nome || ''} playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'} playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''} playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''} onPlayerBack={() => setSelectedItem(null)} />
+  return (
+    <CatalogScreen
+      onBack={onBack}
+      title="FAVORITES"
+      icon="★"
+      items={favoriteItems}
+      favorites={favorites}
+      onToggleFavorite={onToggleFavorite}
+      onSelectItem={openFavorite}
+      selectedItem={selectedItem}
+      playerTitle={selectedItem?.nome || ''}
+      playerDescription={selectedItem ? 'Reproduzindo favorito selecionado.' : 'Clique em um favorito para reproduzir.'}
+      playerUrl={selectedItem ? getPlayableItemUrl(selectedItem, sessionCredentials) : ''}
+      playerFallbackUrl={selectedItem?.tipo === 'LIVE TV' ? buildXtreamPlaybackUrl(sessionCredentials, 'live', selectedItem.streamId || selectedItem.id, 'ts') : ''}
+      onPlayerBack={() => setSelectedItem(null)}
+    />
+  )
 }
 
 function Topbar({ screen, onNavigate }) {
@@ -1232,7 +1666,7 @@ function Topbar({ screen, onNavigate }) {
     <header className="topbar">
       <button className="logo" onClick={() => onNavigate('home')} aria-label="Abrir início">
         <span>▶</span>
-        <strong>BlueStream</strong>
+        <strong>PXT PLAYER</strong>
       </button>
       <nav className="top-navigation" aria-label="Navegação principal">
         {navigationItems.map((item) => (
