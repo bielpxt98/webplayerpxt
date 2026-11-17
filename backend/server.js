@@ -428,6 +428,7 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs, clientIp = '') {
     requestUrl.searchParams.set('action', action);
   }
 
+  const targetUrlStr = requestUrl.toString();
   const timeoutMs = customTimeoutMs || REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -443,41 +444,71 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs, clientIp = '') {
     ];
     let lastStatus = 0;
 
+    // 1. Tentativa direta pelo servidor
     for (const userAgent of userAgents) {
-      const headers = {
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-        'User-Agent': userAgent,
-        Connection: 'keep-alive',
-      };
+      try {
+        const headers = {
+          Accept: 'application/json, text/plain, */*',
+          'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+          'User-Agent': userAgent,
+          Connection: 'keep-alive',
+        };
 
-      if (clientIp) {
-        headers['X-Forwarded-For'] = clientIp;
-        headers['X-Real-IP'] = clientIp;
+        if (clientIp) {
+          headers['X-Forwarded-For'] = clientIp;
+          headers['X-Real-IP'] = clientIp;
+        }
+
+        const xtreamResponse = await fetch(targetUrlStr, {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+        });
+
+        if (xtreamResponse.ok) {
+          return await xtreamResponse.json();
+        }
+
+        lastStatus = xtreamResponse.status;
+
+        if (lastStatus !== 403 && lastStatus !== 401) {
+          break;
+        }
+      } catch (_err) {
+        // segue para o fallback
       }
+    }
 
-      const xtreamResponse = await fetch(requestUrl, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-      });
+    // 2. Fallback via Relays HTTPS para contornar bloqueio 403 de IP de nuvem (Render)
+    const relayUrls = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrlStr)}`,
+      `https://corsproxy.io/?${encodeURIComponent(targetUrlStr)}`,
+      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrlStr)}`,
+    ];
 
-      if (xtreamResponse.ok) {
-        return await xtreamResponse.json();
-      }
+    for (const relayUrl of relayUrls) {
+      try {
+        const relayRes = await fetch(relayUrl, {
+          method: 'GET',
+          headers: { Accept: 'application/json, text/plain, */*' },
+          signal: controller.signal,
+        });
 
-      lastStatus = xtreamResponse.status;
-
-      if (lastStatus !== 403 && lastStatus !== 401) {
-        break;
+        if (relayRes.ok) {
+          const text = await relayRes.text();
+          const trimmedText = text ? text.trim() : '';
+          if (trimmedText.startsWith('{') || trimmedText.startsWith('[')) {
+            return JSON.parse(trimmedText);
+          }
+        }
+      } catch (_relayErr) {
+        // testa o proximo relay
       }
     }
 
     const error = new Error(`Xtream API responded with HTTP ${lastStatus}.`);
     error.status = 502;
-    error.publicMessage = lastStatus === 403
-      ? 'O provedor bloqueou a conexão da nuvem (HTTP 403). Liberando conexão direta via HTTP.'
-      : `Xtream API responded with HTTP ${lastStatus}.`;
+    error.publicMessage = `Não foi possível conectar ao servidor IPTV (HTTP ${lastStatus || 502}).`;
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -505,7 +536,7 @@ async function buildXtreamCatalog({ apiUrl, initialData, clientIp }) {
   ].filter(([catalogKey]) => normalizedFromInitialData[catalogKey].length === 0);
 
   const actionResults = await Promise.allSettled(
-    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action, 6000, clientIp)),
+    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action, 12000, clientIp)),
   );
 
   const supplementalData = {};
