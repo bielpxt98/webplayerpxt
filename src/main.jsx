@@ -164,8 +164,59 @@ function saveAccount(account) {
 }
 
 async function validateXtreamAccount(account) {
-  if (!buildXtreamLoginUrl(account)) throw new Error('Preencha servidor, usuário e senha.')
+  const directLoginUrl = buildXtreamLoginUrl(account)
+  if (!directLoginUrl) throw new Error('Preencha servidor, usuário e senha.')
 
+  // 1. Tenta validação direta pelo navegador do usuário (contorna bloqueio por datacenter/EUA)
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 6000)
+    const directResponse = await fetch(directLoginUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json, text/plain, */*' },
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+
+    if (directResponse.ok) {
+      const data = await directResponse.json()
+      const userInfo = data?.user_info || {}
+      if (userInfo.auth === 1 || userInfo.status === 'Active') {
+        const catalog = {
+          liveCategories: [],
+          movieCategories: [],
+          seriesCategories: [],
+          liveStreams: [],
+          vodStreams: [],
+          series: [],
+          user_info: userInfo,
+          server_info: data?.server_info || {},
+          fetchedAt: new Date().toISOString(),
+        }
+
+        return {
+          ok: true,
+          status: userInfo.status ?? null,
+          auth: userInfo.auth ?? null,
+          username: userInfo.username ?? null,
+          exp_date: userInfo.exp_date ?? null,
+          max_connections: userInfo.max_connections ?? null,
+          active_cons: userInfo.active_cons ?? null,
+          allowed_output_formats: userInfo.allowed_output_formats ?? [],
+          catalog,
+        }
+      } else if (userInfo.auth === 0) {
+        throw new Error('Usuário ou senha inválidos.')
+      }
+    }
+  } catch (directErr) {
+    if (directErr.message === 'Usuário ou senha inválidos.') {
+      throw directErr
+    }
+    console.info('Tentando via backend proxy...', directErr.message)
+  }
+
+  // 2. Fallback: via Backend API
   const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
