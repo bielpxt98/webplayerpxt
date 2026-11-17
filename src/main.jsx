@@ -172,26 +172,78 @@ function saveAccount(account) {
   localStorage.removeItem(STORAGE_KEY)
 }
 
+function buildBrowserRelayCandidates(rawUrl) {
+  if (!rawUrl) return []
+  const list = [rawUrl]
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && /^http:\/\//i.test(rawUrl)) {
+    list.push(rawUrl.replace(/^http:\/\//i, 'https://'))
+  }
+  list.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`)
+  list.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rawUrl)}`)
+  list.push(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`)
+  return list
+}
+
+async function fetchJsonWithBrowserRelays(rawUrl, timeoutMs = 10000) {
+  const candidates = buildBrowserRelayCandidates(rawUrl)
+  for (const candidateUrl of candidates) {
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), timeoutMs)
+      const res = await fetch(candidateUrl, {
+        method: 'GET',
+        signal: ctrl.signal,
+      })
+      clearTimeout(t)
+      if (res.ok) {
+        const text = await res.text()
+        const trimmed = text ? text.trim() : ''
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          return JSON.parse(trimmed)
+        }
+      }
+    } catch (_err) {
+      // Tenta o próximo relay
+    }
+  }
+  return null
+}
+
+async function fetchTextWithBrowserRelays(rawUrl, timeoutMs = 12000) {
+  const candidates = buildBrowserRelayCandidates(rawUrl)
+  for (const candidateUrl of candidates) {
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), timeoutMs)
+      const res = await fetch(candidateUrl, {
+        method: 'GET',
+        signal: ctrl.signal,
+      })
+      clearTimeout(t)
+      if (res.ok) {
+        const text = await res.text()
+        if (text && text.includes('#EXTINF')) {
+          return text
+        }
+      }
+    } catch (_err) {
+      // Tenta o próximo relay
+    }
+  }
+  return ''
+}
+
 async function fetchDirectXtreamCatalog(account, initialData) {
   const normServer = normalizeServer(account.server)
 
   async function fetchAction(action) {
     try {
       const url = new URL('/player_api.php', normServer)
-      url.searchParams.set('username', account.username)
-      url.searchParams.set('password', account.password)
+      url.searchParams.set('username', account.username.trim())
+      url.searchParams.set('password', account.password.trim())
       url.searchParams.set('action', action)
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 10000)
-      const r = await fetch(url.toString(), {
-        headers: { Accept: 'application/json, text/plain, */*' },
-        signal: ctrl.signal,
-      })
-      clearTimeout(t)
-      if (r.ok) {
-        const json = await r.json()
-        return Array.isArray(json) ? json : []
-      }
+      const json = await fetchJsonWithBrowserRelays(url.toString(), 12000)
+      if (Array.isArray(json)) return json
     } catch (err) {
       console.warn(`[XTREAM DIRECT] Falha em ${action}:`, err.message)
     }
@@ -219,45 +271,39 @@ async function fetchDirectXtreamCatalog(account, initialData) {
   if (!liveStreams.length && !vodStreams.length && !series.length) {
     try {
       const m3uUrl = new URL('/get.php', normServer)
-      m3uUrl.searchParams.set('username', account.username)
-      m3uUrl.searchParams.set('password', account.password)
+      m3uUrl.searchParams.set('username', account.username.trim())
+      m3uUrl.searchParams.set('password', account.password.trim())
       m3uUrl.searchParams.set('type', 'm3u_plus')
       m3uUrl.searchParams.set('output', 'm3u8')
-      const m3uCtrl = new AbortController()
-      const m3uT = setTimeout(() => m3uCtrl.abort(), 10000)
-      const m3uRes = await fetch(m3uUrl.toString(), { signal: m3uCtrl.signal })
-      clearTimeout(m3uT)
-      if (m3uRes.ok) {
-        const m3uText = await m3uRes.text()
-        if (m3uText && m3uText.includes('#EXTINF')) {
-          const parsedM3u = parseM3UPlaylist(m3uText, normServer)
-          if (parsedM3u.live.length > 0 || parsedM3u.movies.length > 0 || parsedM3u.series.length > 0) {
-            return {
-              liveCategories: Object.keys(parsedM3u.groups || {}).map((g) => ({ category_id: g, category_name: g })),
-              movieCategories: [],
-              seriesCategories: [],
-              liveStreams: parsedM3u.live.map((c) => ({
-                stream_id: c.streamId || c.id,
-                name: c.nome,
-                category_name: c.grupo,
-                stream_icon: c.logo,
-              })),
-              vodStreams: parsedM3u.movies.map((m) => ({
-                stream_id: m.streamId || m.id,
-                name: m.nome,
-                category_name: m.grupo,
-                stream_icon: m.logo,
-              })),
-              series: parsedM3u.series.map((s) => ({
-                series_id: s.streamId || s.id,
-                name: s.nome,
-                category_name: s.grupo,
-                cover: s.logo,
-              })),
-              user_info: initialData?.user_info || {},
-              server_info: initialData?.server_info || {},
-              fetchedAt: new Date().toISOString(),
-            }
+      const m3uText = await fetchTextWithBrowserRelays(m3uUrl.toString(), 12000)
+      if (m3uText && m3uText.includes('#EXTINF')) {
+        const parsedM3u = parseM3UPlaylist(m3uText, normServer)
+        if (parsedM3u.live.length > 0 || parsedM3u.movies.length > 0 || parsedM3u.series.length > 0) {
+          return {
+            liveCategories: Object.keys(parsedM3u.groups || {}).map((g) => ({ category_id: g, category_name: g })),
+            movieCategories: [],
+            seriesCategories: [],
+            liveStreams: parsedM3u.live.map((c) => ({
+              stream_id: c.streamId || c.id,
+              name: c.nome,
+              category_name: c.grupo,
+              stream_icon: c.logo,
+            })),
+            vodStreams: parsedM3u.movies.map((m) => ({
+              stream_id: m.streamId || m.id,
+              name: m.nome,
+              category_name: m.grupo,
+              stream_icon: m.logo,
+            })),
+            series: parsedM3u.series.map((s) => ({
+              series_id: s.streamId || s.id,
+              name: s.nome,
+              category_name: s.grupo,
+              cover: s.logo,
+            })),
+            user_info: initialData?.user_info || {},
+            server_info: initialData?.server_info || {},
+            fetchedAt: new Date().toISOString(),
           }
         }
       }
@@ -283,55 +329,30 @@ async function validateXtreamAccount(account) {
   const directLoginUrl = buildXtreamLoginUrl(account)
   if (!directLoginUrl) throw new Error('Preencha servidor, usuário e senha.')
 
-  // 1. Tenta validação direta pelo navegador do usuário (suporta HTTP puro e contorna bloqueio de datacenter)
-  const candidateUrls = [directLoginUrl]
-  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && /^http:\/\//i.test(directLoginUrl)) {
-    candidateUrls.push(directLoginUrl.replace(/^http:\/\//i, 'https://'))
-  }
+  // 1. Tenta validação pelo navegador do usuário (direto + relays HTTPS para contornar CORS e Mixed Content)
+  const data = await fetchJsonWithBrowserRelays(directLoginUrl, 9000)
+  if (data && typeof data === 'object') {
+    const userInfo = data?.user_info || {}
+    if (Number(userInfo.auth) === 1 || String(userInfo.status).toLowerCase() === 'active') {
+      const catalog = await fetchDirectXtreamCatalog(account, data)
 
-  for (const candidateUrl of candidateUrls) {
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 8000)
-      const directResponse = await fetch(candidateUrl, {
-        method: 'GET',
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
-
-      if (directResponse.ok) {
-        const data = await directResponse.json()
-        const userInfo = data?.user_info || {}
-        if (userInfo.auth === 1 || userInfo.status === 'Active') {
-          const effectiveAccount = candidateUrl.startsWith('https://')
-            ? { ...account, server: normalizeServer(account.server).replace(/^http:\/\//i, 'https://') }
-            : account
-          const catalog = await fetchDirectXtreamCatalog(effectiveAccount, data)
-
-          return {
-            ok: true,
-            status: userInfo.status ?? null,
-            auth: userInfo.auth ?? null,
-            username: userInfo.username ?? null,
-            exp_date: userInfo.exp_date ?? null,
-            max_connections: userInfo.max_connections ?? null,
-            active_cons: userInfo.active_cons ?? null,
-            allowed_output_formats: userInfo.allowed_output_formats ?? [],
-            catalog,
-          }
-        } else if (userInfo.auth === 0) {
-          throw new Error('Usuário ou senha inválidos.')
-        }
+      return {
+        ok: true,
+        status: userInfo.status ?? null,
+        auth: userInfo.auth ?? null,
+        username: userInfo.username ?? null,
+        exp_date: userInfo.exp_date ?? null,
+        max_connections: userInfo.max_connections ?? null,
+        active_cons: userInfo.active_cons ?? null,
+        allowed_output_formats: userInfo.allowed_output_formats ?? [],
+        catalog,
       }
-    } catch (directErr) {
-      if (directErr.message === 'Usuário ou senha inválidos.') {
-        throw directErr
-      }
-      console.info('Tentativa direta falhou, testando próxima opção...', directErr.message)
+    } else if (userInfo.auth !== undefined && Number(userInfo.auth) === 0) {
+      throw new Error('Usuário ou senha inválidos.')
     }
   }
 
-  // 2. Fallback: via Backend API
+  // 2. Fallback: via Backend API (que também possui relays configurados)
   const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -350,10 +371,6 @@ async function validateXtreamAccount(account) {
       errorMessage = errorBody.error || errorMessage
     } catch {
       errorMessage = await response.text() || errorMessage
-    }
-
-    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && errorMessage.includes('403')) {
-      errorMessage = 'O provedor (ttvp2.live) recusa conexões de servidores em nuvem. Como o site está em HTTPS, libere o HTTP clicando no ícone do site > "Conteúdo inseguro: Permitir", ou acesse via HTTP puro.'
     }
 
     throw new Error(errorMessage)
@@ -621,20 +638,10 @@ async function fetchSeriesInfo(sessionCredentials, seriesId) {
   const directUrl = buildSeriesInfoUrl(sessionCredentials, seriesId)
   if (!directUrl) throw new Error('Dados da conta ou ID da série ausentes.')
 
-  // 1. Tenta buscar direto pelo navegador do usuário (evita bloqueio 403 de datacenter)
-  try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 8000)
-    const directRes = await fetch(directUrl, {
-      headers: { Accept: 'application/json, text/plain, */*' },
-      signal: ctrl.signal,
-    })
-    clearTimeout(t)
-    if (directRes.ok) {
-      return await directRes.json()
-    }
-  } catch (err) {
-    console.warn('Tentativa direta de series-info falhou, usando fallback backend...', err.message)
+  // 1. Tenta buscar pelo navegador do usuário (direto + relays HTTPS)
+  const directData = await fetchJsonWithBrowserRelays(directUrl, 10000)
+  if (directData && typeof directData === 'object') {
+    return directData
   }
 
   // 2. Fallback via backend proxy
