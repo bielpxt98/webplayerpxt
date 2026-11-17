@@ -66,10 +66,10 @@ const navigationItems = [
 
 function buildStreamProxyUrl(url) {
   if (!url) return ''
-  if (typeof window !== 'undefined' && window.location.protocol === 'http:') {
-    return url
-  }
-  return `${BACKEND_BASE_URL}/api/stream-proxy?url=${encodeURIComponent(url)}`
+  // Sempre entrega o stream direto para o navegador.
+  // Como o usuário está no Brasil (e o provedor IPTV ttvp2.live bloqueia datacenters estrangeiros com 403),
+  // a conexão direta do navegador é o único caminho que conecta e reproduz com sucesso.
+  return url
 }
 
 function normalizeServer(server = '') {
@@ -686,25 +686,6 @@ function useResolvedPlaybackUrl({ item, originalUrl, fallbackUrl = '' }) {
 
 async function resolvePlaybackUrl(originalUrl) {
   if (!originalUrl) return null
-  if (typeof window !== 'undefined' && window.location.protocol === 'http:') {
-    return { finalUrl: originalUrl, statusCode: 200, redirected: false }
-  }
-
-  try {
-    const response = await fetch(`${BACKEND_BASE_URL}/api/stream/resolve`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({ originalUrl }),
-    })
-    const data = await response.json().catch(() => ({}))
-    if (response.ok && data.ok) return data
-  } catch (err) {
-    console.warn('Backend stream resolve fallback:', err.message)
-  }
-
   return { finalUrl: originalUrl, statusCode: 200, redirected: false }
 }
 

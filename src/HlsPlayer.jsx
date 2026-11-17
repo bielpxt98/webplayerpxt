@@ -84,6 +84,9 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
     const logPlaybackEvent = (event) => {
       const snapshot = getPlaybackSnapshot(video)
       console.info(`[HLS PLAYER] ${event.type}`, snapshot)
+      if (['loadeddata', 'canplay', 'playing'].includes(event.type)) {
+        setPlayerStatus('ready')
+      }
       onPlaybackUrlChange?.({
         loadedVideoUrl: snapshot.currentSrc,
         videoError: snapshot.error ? JSON.stringify(snapshot.error) : '',
@@ -241,7 +244,11 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
       <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} />
       {playerStatus === 'idle' && <div className="player-overlay">Selecione um item para iniciar</div>}
       {playerStatus === 'loading' && <div className="player-overlay">Carregando player...</div>}
-      {playerStatus === 'error' && <div className="player-error">Falha na reprodução. Tentando resolver novamente...</div>}
+      {playerStatus === 'error' && (
+        <div className="player-error">
+          Falha na reprodução do stream. Verifique se o conteúdo está ativo no provedor.
+        </div>
+      )}
     </div>
   )
 }
