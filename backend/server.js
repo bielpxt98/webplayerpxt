@@ -15,38 +15,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDistPath = resolveFrontendDistPath();
 
-const defaultAllowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:3000',
-  `http://localhost:${PORT}`,
-];
+// Desativa redirecionamentos forçados de HTTPS (HSTS) para aceitar HTTP puro e recursos mistos
+app.use((_req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=0');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  next();
+});
 
-const configuredAllowedOrigins = [
-  process.env.FRONTEND_ORIGIN,
-  process.env.CORS_ORIGIN,
-  process.env.RENDER_EXTERNAL_URL,
-  getRenderServiceOrigin(),
-]
-  .filter(Boolean)
-  .flatMap((origins) => origins.split(','))
-  .map(normalizeOrigin)
-  .filter(Boolean);
-
-const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins])];
-
+// Libera CORS tanto para HTTP puro quanto HTTPS em qualquer domínio/IP
 const corsOptions = {
-  origin(origin, callback) {
-    const normalizedOrigin = normalizeOrigin(origin);
-
-    if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin) || isLocalOrigin(normalizedOrigin)) {
-      callback(null, true);
-      return;
-    }
-
-    callback(new Error('Origin not allowed by CORS'));
-  },
+  origin: true,
+  credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept', 'Range'],
+  allowedHeaders: ['Content-Type', 'Accept', 'Range', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'],
   optionsSuccessStatus: 204,
 };
@@ -57,7 +39,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/api', cors(corsOptions));
 app.options('/api/*', cors(corsOptions));
-app.use('/api', express.json({ limit: '32kb' }));
+app.use('/api', express.json({ limit: '64kb' }));
 
 app.post('/api/xtream/validate', async (req, res) => {
   const { server, username, password } = req.body || {};
@@ -83,9 +65,10 @@ app.post('/api/xtream/validate', async (req, res) => {
   }
 
   try {
-    const data = await fetchXtreamJson(apiUrl);
+    const clientIp = getClientIp(req);
+    const data = await fetchXtreamJson(apiUrl, null, REQUEST_TIMEOUT_MS, clientIp);
     const userInfo = data?.user_info || {};
-    const catalog = await buildXtreamCatalog({ apiUrl, initialData: data });
+    const catalog = await buildXtreamCatalog({ apiUrl, initialData: data, clientIp });
 
     return res.json({
       ok: true,
@@ -110,9 +93,6 @@ app.post('/api/xtream/validate', async (req, res) => {
   }
 });
 
-
-
-
 app.get('/api/stream-proxy', async (req, res) => {
   const requestedUrl = req.query?.url;
 
@@ -132,22 +112,44 @@ app.get('/api/stream-proxy', async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    const proxyHeaders = {
-      Accept: req.get('accept') || 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
-      'User-Agent': DEFAULT_USER_AGENT,
-    };
+    const clientIp = getClientIp(req);
+    const userAgents = [
+      'IPTVSmartersPlayer',
+      'VLC/3.0.20 LibVLC/3.0.20',
+      'Lavf/60.3.100',
+      DEFAULT_USER_AGENT,
+    ];
 
-    const range = req.get('range');
-    if (range) {
-      proxyHeaders.Range = range;
+    let upstreamResponse = null;
+    for (const ua of userAgents) {
+      const proxyHeaders = {
+        Accept: req.get('accept') || 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
+        'User-Agent': ua,
+        Connection: 'keep-alive',
+      };
+
+      if (clientIp) {
+        proxyHeaders['X-Forwarded-For'] = clientIp;
+        proxyHeaders['X-Real-IP'] = clientIp;
+      }
+
+      const range = req.get('range');
+      if (range) {
+        proxyHeaders.Range = range;
+      }
+
+      upstreamResponse = await fetch(streamUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: proxyHeaders,
+        signal: controller.signal,
+      });
+
+      if (upstreamResponse.ok || upstreamResponse.status === 206 || upstreamResponse.status !== 403) {
+        break;
+      }
     }
 
-    const upstreamResponse = await fetch(streamUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: proxyHeaders,
-      signal: controller.signal,
-    });
     clearTimeout(timeout);
 
     const contentType = upstreamResponse.headers.get('content-type') || getContentTypeFromUrl(upstreamResponse.url || streamUrl.toString());
@@ -248,7 +250,8 @@ app.post('/api/xtream/series-info', async (req, res) => {
   }
 
   try {
-    const data = await fetchXtreamJson(apiUrl);
+    const clientIp = getClientIp(req);
+    const data = await fetchXtreamJson(apiUrl, null, REQUEST_TIMEOUT_MS, clientIp);
     return res.json(data);
   } catch (error) {
     const isAbort = error?.name === 'AbortError';
@@ -292,6 +295,13 @@ app.use((err, _req, res, _next) => {
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
 
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || '';
+}
 
 async function resolveStreamRedirect(streamUrl) {
   return requestStreamHeaders(streamUrl);
@@ -334,11 +344,11 @@ async function requestStreamHeaders(streamUrl) {
   }
 }
 
-
 function getContentTypeFromUrl(url) {
   const pathname = new URL(url).pathname.toLowerCase();
   if (pathname.endsWith('.m3u8')) return 'application/vnd.apple.mpegurl';
   if (pathname.endsWith('.ts')) return 'video/mp2t';
+  if (pathname.endsWith('.mp4')) return 'video/mp4';
   return 'application/octet-stream';
 }
 
@@ -379,7 +389,7 @@ function rewriteM3u8AttributeUris(line, baseUrl, req) {
   return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${buildProxyUrl(new URL(uri, baseUrl), req)}"`);
 }
 
-function buildProxyUrl(targetUrl, req) {
+function buildProxyUrl(targetUrl, _req) {
   return `/api/stream-proxy?url=${encodeURIComponent(targetUrl.toString())}`;
 }
 
@@ -411,21 +421,7 @@ function resolveFrontendDistPath() {
   return distPath;
 }
 
-function normalizeOrigin(origin) {
-  return origin?.trim().replace(/\/+$/, '');
-}
-
-function getRenderServiceOrigin() {
-  const serviceName = process.env.RENDER_SERVICE_NAME;
-
-  if (!serviceName) {
-    return null;
-  }
-
-  return `https://${serviceName}.onrender.com`;
-}
-
-async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
+async function fetchXtreamJson(apiUrl, action, customTimeoutMs, clientIp = '') {
   const requestUrl = new URL(apiUrl);
 
   if (action) {
@@ -437,22 +433,32 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    // Alguns provedores bloqueiam certos User-Agents; tenta alguns antes de desistir.
     const userAgents = [
+      'IPTVSmartersPlayer',
       'IPTVSmarters/1.0',
       'okhttp/4.9.0',
-      'VLC/3.0.18 LibVLC/3.0.18',
+      'VLC/3.0.20 LibVLC/3.0.20',
+      'Lavf/60.3.100',
       DEFAULT_USER_AGENT,
     ];
     let lastStatus = 0;
 
     for (const userAgent of userAgents) {
+      const headers = {
+        Accept: 'application/json, text/plain, */*',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': userAgent,
+        Connection: 'keep-alive',
+      };
+
+      if (clientIp) {
+        headers['X-Forwarded-For'] = clientIp;
+        headers['X-Real-IP'] = clientIp;
+      }
+
       const xtreamResponse = await fetch(requestUrl, {
         method: 'GET',
-        headers: {
-          Accept: '*/*',
-          'User-Agent': userAgent,
-        },
+        headers,
         signal: controller.signal,
       });
 
@@ -462,7 +468,7 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
 
       lastStatus = xtreamResponse.status;
 
-      if (lastStatus !== 403) {
+      if (lastStatus !== 403 && lastStatus !== 401) {
         break;
       }
     }
@@ -470,7 +476,7 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
     const error = new Error(`Xtream API responded with HTTP ${lastStatus}.`);
     error.status = 502;
     error.publicMessage = lastStatus === 403
-      ? 'O provedor bloqueou o acesso do servidor (HTTP 403). Provavelmente ele recusa o IP da hospedagem.'
+      ? 'O provedor bloqueou a conexão da nuvem (HTTP 403). Liberando conexão direta via HTTP.'
       : `Xtream API responded with HTTP ${lastStatus}.`;
     throw error;
   } finally {
@@ -478,10 +484,9 @@ async function fetchXtreamJson(apiUrl, action, customTimeoutMs) {
   }
 }
 
-async function buildXtreamCatalog({ apiUrl, initialData }) {
+async function buildXtreamCatalog({ apiUrl, initialData, clientIp }) {
   const normalizedFromInitialData = normalizeXtreamCatalog(initialData);
 
-  // Se a resposta inicial já tem categorias ou canais, usa eles diretamente
   const hasInitialContent =
     normalizedFromInitialData.liveStreams.length > 0 ||
     normalizedFromInitialData.liveCategories.length > 0;
@@ -490,8 +495,6 @@ async function buildXtreamCatalog({ apiUrl, initialData }) {
     return normalizedFromInitialData;
   }
 
-  // Caso contrário, busca as ações faltantes com timeout curto por requisição (5s)
-  // para evitar travar a validação de login caso o servidor demore para responder listagens
   const missingActions = [
     ['liveCategories', 'get_live_categories'],
     ['movieCategories', 'get_vod_categories'],
@@ -502,7 +505,7 @@ async function buildXtreamCatalog({ apiUrl, initialData }) {
   ].filter(([catalogKey]) => normalizedFromInitialData[catalogKey].length === 0);
 
   const actionResults = await Promise.allSettled(
-    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action, 5000)),
+    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action, 6000, clientIp)),
   );
 
   const supplementalData = {};
@@ -578,7 +581,6 @@ function normalizeXtreamCatalog(data = {}) {
   };
 }
 
-
 function createMaskedXtreamLiveUrl(apiUrl, streamId, extension) {
   if (!streamId) return '';
 
@@ -623,17 +625,10 @@ function filterCategories(categories, typeHints) {
   });
 }
 
-function isLocalOrigin(origin) {
-  try {
-    const { hostname } = new URL(origin);
-    return hostname === 'localhost' || hostname === '127.0.0.1';
-  } catch (_error) {
-    return false;
-  }
-}
-
 function normalizeServerUrl(server) {
-  const url = new URL(server);
+  const trimmed = String(server || '').trim().replace(/\/+$/, '');
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const url = new URL(withProtocol);
 
   if (!['http:', 'https:'].includes(url.protocol)) {
     throw new Error('Invalid protocol');
@@ -642,6 +637,6 @@ function normalizeServerUrl(server) {
   return url;
 }
 
-app.listen(PORT, () => {
-  console.log(`${SERVICE_NAME} listening on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`${SERVICE_NAME} listening on http://0.0.0.0:${PORT}`);
 });
