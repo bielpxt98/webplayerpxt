@@ -1,7 +1,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
-import { MediaManagerProvider, useMediaManager } from './mediaManager.jsx'
+import { MediaManagerProvider, useMediaManager, parseM3UPlaylist } from './mediaManager.jsx'
 import './styles.css'
 
 const DEFAULT_SERVER = 'http://ttvp2.live'
@@ -50,6 +50,9 @@ function clearCachedPlaybackUrl(cacheKey) {
 
 function proxyExternalAssetUrl(url) {
   if (!url || !/^https?:\/\//i.test(url)) return url || ''
+  if (typeof window !== 'undefined' && window.location.protocol === 'http:') {
+    return url
+  }
   return buildStreamProxyUrl(url)
 }
 
@@ -63,6 +66,9 @@ const navigationItems = [
 
 function buildStreamProxyUrl(url) {
   if (!url) return ''
+  if (typeof window !== 'undefined' && window.location.protocol === 'http:') {
+    return url
+  }
   return `${BACKEND_BASE_URL}/api/stream-proxy?url=${encodeURIComponent(url)}`
 }
 
@@ -163,6 +169,113 @@ function saveAccount(account) {
   localStorage.removeItem(STORAGE_KEY)
 }
 
+async function fetchDirectXtreamCatalog(account, initialData) {
+  const normServer = normalizeServer(account.server)
+
+  async function fetchAction(action) {
+    try {
+      const url = new URL('/player_api.php', normServer)
+      url.searchParams.set('username', account.username)
+      url.searchParams.set('password', account.password)
+      url.searchParams.set('action', action)
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 10000)
+      const r = await fetch(url.toString(), {
+        headers: { Accept: 'application/json, text/plain, */*' },
+        signal: ctrl.signal,
+      })
+      clearTimeout(t)
+      if (r.ok) {
+        const json = await r.json()
+        return Array.isArray(json) ? json : []
+      }
+    } catch (err) {
+      console.warn(`[XTREAM DIRECT] Falha em ${action}:`, err.message)
+    }
+    return []
+  }
+
+  // Busca em paralelo as categorias e canais
+  const [
+    liveCategories,
+    movieCategories,
+    seriesCategories,
+    liveStreams,
+    vodStreams,
+    series,
+  ] = await Promise.all([
+    fetchAction('get_live_categories'),
+    fetchAction('get_vod_categories'),
+    fetchAction('get_series_categories'),
+    fetchAction('get_live_streams'),
+    fetchAction('get_vod_streams'),
+    fetchAction('get_series'),
+  ])
+
+  // Se liveStreams for vazio, tenta obter via M3U (get.php) como fallback inteligente
+  if (!liveStreams.length && !vodStreams.length && !series.length) {
+    try {
+      const m3uUrl = new URL('/get.php', normServer)
+      m3uUrl.searchParams.set('username', account.username)
+      m3uUrl.searchParams.set('password', account.password)
+      m3uUrl.searchParams.set('type', 'm3u_plus')
+      m3uUrl.searchParams.set('output', 'm3u8')
+      const m3uCtrl = new AbortController()
+      const m3uT = setTimeout(() => m3uCtrl.abort(), 10000)
+      const m3uRes = await fetch(m3uUrl.toString(), { signal: m3uCtrl.signal })
+      clearTimeout(m3uT)
+      if (m3uRes.ok) {
+        const m3uText = await m3uRes.text()
+        if (m3uText && m3uText.includes('#EXTINF')) {
+          const parsedM3u = parseM3UPlaylist(m3uText, normServer)
+          if (parsedM3u.live.length > 0 || parsedM3u.movies.length > 0 || parsedM3u.series.length > 0) {
+            return {
+              liveCategories: Object.keys(parsedM3u.groups || {}).map((g) => ({ category_id: g, category_name: g })),
+              movieCategories: [],
+              seriesCategories: [],
+              liveStreams: parsedM3u.live.map((c) => ({
+                stream_id: c.streamId || c.id,
+                name: c.nome,
+                category_name: c.grupo,
+                stream_icon: c.logo,
+              })),
+              vodStreams: parsedM3u.movies.map((m) => ({
+                stream_id: m.streamId || m.id,
+                name: m.nome,
+                category_name: m.grupo,
+                stream_icon: m.logo,
+              })),
+              series: parsedM3u.series.map((s) => ({
+                series_id: s.streamId || s.id,
+                name: s.nome,
+                category_name: s.grupo,
+                cover: s.logo,
+              })),
+              user_info: initialData?.user_info || {},
+              server_info: initialData?.server_info || {},
+              fetchedAt: new Date().toISOString(),
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[M3U DIRECT] Falha no fallback get.php:', e.message)
+    }
+  }
+
+  return {
+    liveCategories,
+    movieCategories,
+    seriesCategories,
+    liveStreams,
+    vodStreams,
+    series,
+    user_info: initialData?.user_info || {},
+    server_info: initialData?.server_info || {},
+    fetchedAt: new Date().toISOString(),
+  }
+}
+
 async function validateXtreamAccount(account) {
   const directLoginUrl = buildXtreamLoginUrl(account)
   if (!directLoginUrl) throw new Error('Preencha servidor, usuário e senha.')
@@ -170,7 +283,7 @@ async function validateXtreamAccount(account) {
   // 1. Tenta validação direta pelo navegador do usuário (contorna bloqueio por datacenter/EUA)
   try {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 6000)
+    const timeoutId = setTimeout(() => controller.abort(), 7000)
     const directResponse = await fetch(directLoginUrl, {
       method: 'GET',
       headers: { Accept: 'application/json, text/plain, */*' },
@@ -182,17 +295,7 @@ async function validateXtreamAccount(account) {
       const data = await directResponse.json()
       const userInfo = data?.user_info || {}
       if (userInfo.auth === 1 || userInfo.status === 'Active') {
-        const catalog = {
-          liveCategories: [],
-          movieCategories: [],
-          seriesCategories: [],
-          liveStreams: [],
-          vodStreams: [],
-          series: [],
-          user_info: userInfo,
-          server_info: data?.server_info || {},
-          fetchedAt: new Date().toISOString(),
-        }
+        const catalog = await fetchDirectXtreamCatalog(account, data)
 
         return {
           ok: true,
@@ -235,6 +338,10 @@ async function validateXtreamAccount(account) {
       errorMessage = errorBody.error || errorMessage
     } catch {
       errorMessage = await response.text() || errorMessage
+    }
+
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && errorMessage.includes('403')) {
+      errorMessage = 'O provedor (ttvp2.live) recusa conexões de servidores em nuvem. Como o site está em HTTPS, libere o HTTP clicando no ícone do site > "Conteúdo inseguro: Permitir", ou acesse via HTTP puro.'
     }
 
     throw new Error(errorMessage)
@@ -562,22 +669,26 @@ function useResolvedPlaybackUrl({ item, originalUrl, fallbackUrl = '' }) {
 
 async function resolvePlaybackUrl(originalUrl) {
   if (!originalUrl) return null
-
-  const response = await fetch(`${BACKEND_BASE_URL}/api/stream/resolve`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ originalUrl }),
-  })
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok || !data.ok) {
-    throw new Error(data.error || 'Não foi possível resolver o redirect do stream.')
+  if (typeof window !== 'undefined' && window.location.protocol === 'http:') {
+    return { finalUrl: originalUrl, statusCode: 200, redirected: false }
   }
 
-  return data
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/api/stream/resolve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ originalUrl }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (response.ok && data.ok) return data
+  } catch (err) {
+    console.warn('Backend stream resolve fallback:', err.message)
+  }
+
+  return { finalUrl: originalUrl, statusCode: 200, redirected: false }
 }
 
 function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack }) {
@@ -702,7 +813,24 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   }
 
   if (!channels.length) {
-    return <main className="placeholder-wrap"><section className="panel placeholder"><div className="placeholder-icon">📺</div><p className="eyebrow">LIVE TV</p><h2>Nenhuma lista carregada</h2><p>Carregando catálogo...</p><button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button></section></main>
+    return (
+      <main className="placeholder-wrap">
+        <section className="panel placeholder" style={{ maxWidth: '580px', padding: '36px 28px' }}>
+          <div className="placeholder-icon">📺</div>
+          <p className="eyebrow">LIVE TV</p>
+          <h2>Nenhum canal disponível</h2>
+          <p style={{ margin: '14px 0 24px', lineHeight: 1.6, opacity: 0.9 }}>
+            Sua conta conectou com sucesso, mas o servidor IPTV não retornou canais para este usuário.
+            <br />
+            Verifique no painel do servidor se há pacotes ou bouquets de canais liberados para esta conta.
+          </p>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button className="primary-button" type="button" onClick={() => window.location.reload()}>RECARREGAR</button>
+            <button className="secondary-button" type="button" onClick={onBack}>VOLTAR AO INÍCIO</button>
+          </div>
+        </section>
+      </main>
+    )
   }
 
   const liveSearchControl = (
@@ -823,12 +951,16 @@ function CatalogScreen({ title, icon, items, searchIndex, favorites, onToggleFav
   if (!items.length) {
     return (
       <main className="placeholder-wrap">
-        <section className="panel placeholder">
+        <section className="panel placeholder" style={{ maxWidth: '580px', padding: '36px 28px' }}>
           <div className="placeholder-icon">{icon}</div>
           <p className="eyebrow">{title}</p>
-          <h2>Nenhum item carregado</h2>
-          <p>Carregando catálogo...</p>
-          <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+          <h2>Nenhum item disponível</h2>
+          <p style={{ margin: '14px 0 24px', lineHeight: 1.6, opacity: 0.9 }}>
+            Nenhum conteúdo de {title} foi retornado para este usuário pelo servidor IPTV.
+          </p>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <button className="secondary-button" type="button" onClick={onBack}>VOLTAR</button>
+          </div>
         </section>
       </main>
     )
