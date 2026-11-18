@@ -124,9 +124,13 @@ app.post('/api/xtream/validate', async (req, res) => {
     clearTimeout(timeout);
 
     if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => '');
+      const upstreamServer = upstream.headers.get('server') || '';
       return res.status(upstream.status).json({
         ok: false,
         error: `Servidor retornou HTTP ${upstream.status}`,
+        details: errText.slice(0, 500),
+        upstreamServer,
       });
     }
 
