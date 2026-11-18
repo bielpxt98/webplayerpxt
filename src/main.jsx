@@ -295,16 +295,25 @@ async function fetchDirectXtreamCatalog(account, initialData, onBackgroundUpdate
     fetchedAt: new Date().toISOString(),
   }
 
-  // ETAPA 2 (Segundo plano): Baixa filmes e séries em background sem travar a interface
+  // ETAPA 2 (Segundo plano): Baixa filmes primeiro com banda total e em seguida séries
   const bgFetchVodAndSeries = async () => {
     try {
-      const [vodStreams, series] = await Promise.all([
-        fetchAction('get_vod_streams', 40000),
-        fetchAction('get_series', 40000),
-      ])
-      const completeCatalog = {
+      // 1º Baixa Filmes (VOD) com toda a largura de banda
+      const vodStreams = await fetchAction('get_vod_streams', 30000)
+      const catalogWithVod = {
         ...stage1Catalog,
         vodStreams: vodStreams || [],
+        series: [],
+        fetchedAt: new Date().toISOString(),
+      }
+      if (typeof onBackgroundUpdate === 'function') {
+        onBackgroundUpdate(catalogWithVod)
+      }
+
+      // 2º Baixa Séries logo em seguida
+      const series = await fetchAction('get_series', 35000)
+      const completeCatalog = {
+        ...catalogWithVod,
         series: series || [],
         fetchedAt: new Date().toISOString(),
       }
@@ -1416,9 +1425,21 @@ function CatalogScreen({
         {/* Grade de Cartazes Verticais 2:3 */}
         <section className="cortex-vod-content" aria-label={`Lista de ${displayTitle}`}>
           {displayedItems.length === 0 ? (
-            <p className="empty" style={{ padding: '32px', textAlign: 'center' }}>
-              {isCatalogSearchActive ? 'Nenhum título encontrado na busca.' : isFavoritesOnly ? 'Nenhum título favoritado ainda.' : 'Nenhum item nesta categoria.'}
-            </p>
+            items.length === 0 && !isFavoritesOnly ? (
+              <div style={{ padding: '64px 24px', textAlign: 'center', width: '100%' }}>
+                <div className="cortex-mini-spinner" style={{ margin: '0 auto 16px', width: '38px', height: '38px' }} />
+                <p style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#f8fafc' }}>
+                  Carregando {displayTitle.toLowerCase()}...
+                </p>
+                <p style={{ margin: '8px 0 0', fontSize: '0.88rem', color: '#94a3b8' }}>
+                  Sincronizando cartazes e sinopses em segundo plano. Já está quase pronto!
+                </p>
+              </div>
+            ) : (
+              <p className="empty" style={{ padding: '32px', textAlign: 'center' }}>
+                {isCatalogSearchActive ? 'Nenhum título encontrado na busca.' : isFavoritesOnly ? 'Nenhum título favoritado ainda.' : 'Nenhum item nesta categoria.'}
+              </p>
+            )
           ) : (
             <div className="cortex-poster-grid">
               {displayedItems.map((item) => {
