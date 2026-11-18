@@ -478,9 +478,11 @@ const MAX_SEARCH_RESULTS = 50
 
 function normalizeSearchText(value) {
   return String(value || '')
-    .trim()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .replace(/[-_.:/,+()!?@#$%&*"'`~^|\\<>{}[\]]/g, ' ') // hífens e pontuações viram espaço
+    .replace(/\s+/g, ' ') // múltiplos espaços viram um só
+    .trim()
     .toLowerCase()
 }
 
@@ -491,7 +493,10 @@ function pushAppHistoryState(state) {
 
 function itemMatchesSearch(item, normalizedSearch) {
   if (!normalizedSearch) return true
-  return normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`).includes(normalizedSearch)
+  const searchTokens = normalizeSearchText(normalizedSearch).split(' ').filter(Boolean)
+  if (searchTokens.length === 0) return true
+  const itemText = normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`)
+  return searchTokens.every((token) => itemText.includes(token))
 }
 
 function useDebouncedValue(value, delayMs = SEARCH_DEBOUNCE_MS) {
@@ -520,8 +525,14 @@ function useCatalogSearch({ items, searchIndex = [], searchTerm, filterItem }) {
       ? searchIndex
       : items.map((item) => ({ item, searchable: normalizeSearchText(`${item?.nome || ''} ${item?.grupo || ''}`) }))
 
+    const searchTokens = deferredSearch.split(' ').filter(Boolean)
+
     return searchableIndex
-      .filter((entry) => (!filterItem || filterItem(entry.item)) && entry.searchable.includes(deferredSearch))
+      .filter((entry) => {
+        if (filterItem && !filterItem(entry.item)) return false
+        if (searchTokens.length === 0) return true
+        return searchTokens.every((token) => entry.searchable.includes(token))
+      })
       .slice(0, MAX_SEARCH_RESULTS)
       .map((entry) => entry.item)
   }, [canSearch, deferredSearch, filterItem, items, searchIndex])
