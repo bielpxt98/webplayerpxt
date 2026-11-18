@@ -72,12 +72,14 @@ function playVideo(video, onPlaybackUrlChange) {
   }
 }
 
-export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', title, onPlaybackUrlChange }) {
+export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', title, isLive = false, onPlaybackUrlChange }) {
   const videoRef = useRef(null)
   const [candidateIndex, setCandidateIndex] = useState(0)
   const [playerStatus, setPlayerStatus] = useState('idle')
   const hlsRef = useRef(null)
   const activeUrlRef = useRef('')
+
+  const isLiveStream = Boolean(isLive || url?.includes('/live/') || url?.includes('.m3u8'))
 
   // Lista de tentativas automáticas para contornar bloqueios de HTTP puro / Mixed Content / CORS
   const candidates = (() => {
@@ -179,18 +181,34 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
     video.load()
 
     if (shouldUseHls && hlsSupported) {
-      const hls = new Hls({
+      const hlsConfig = {
         enableWorker: true,
         xhrSetup(xhr) {
           xhr.withCredentials = false
         },
-      })
+      }
+
+      if (isLiveStream) {
+        Object.assign(hlsConfig, {
+          liveSyncDurationCount: 2, // Mantém colado a apenas 2 segmentos do ao vivo real
+          liveMaxLatencyDurationCount: 4, // Não deixa atrasar mais de 4 segmentos
+          maxLiveSyncPlaybackRate: 1.15, // Recupera atrasos imperceptivelmente
+          liveDurationInfinity: true, // Mostra como transmissão AO VIVO contínua (infinito)
+          lowLatencyMode: true,
+          backBufferLength: 30, // Mantém a memória leve e fluida
+        })
+      }
+
+      const hls = new Hls(hlsConfig)
       hlsRef.current = hls
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setPlayerStatus('ready')
         onPlaybackUrlChange?.({ manifestParsed: 'sim', loadedVideoUrl: video.currentSrc || video.src || '' })
         playVideo(video, onPlaybackUrlChange)
+        if (isLiveStream && typeof hls.liveSyncPosition === 'number' && hls.liveSyncPosition > 0) {
+          video.currentTime = hls.liveSyncPosition
+        }
       })
 
       hls.on(Hls.Events.ERROR, (_event, data) => {

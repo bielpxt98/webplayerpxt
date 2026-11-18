@@ -1134,13 +1134,19 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
         <section className="cortex-col cortex-col-preview" aria-label="Prévia e Guia do canal">
           <div className="cortex-player-wrapper">
             {activeChannel ? (
-              <HlsPlayer
-                url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''}
-                fallbackUrl={activeFallbackTsUrl ? buildStreamProxyUrl(activeFallbackTsUrl) : ''}
-                contentType={playbackDebug.contentType}
-                title={activeChannel.nome}
-                onPlaybackUrlChange={updatePlaybackDebug}
-              />
+              <>
+                <HlsPlayer
+                  url={playerPlaybackUrl ? buildStreamProxyUrl(playerPlaybackUrl) : ''}
+                  fallbackUrl={activeFallbackTsUrl ? buildStreamProxyUrl(activeFallbackTsUrl) : ''}
+                  contentType={playbackDebug.contentType}
+                  title={activeChannel.nome}
+                  isLive={true}
+                  onPlaybackUrlChange={updatePlaybackDebug}
+                />
+                <div className="cortex-live-indicator">
+                  <span className="live-dot" /> AO VIVO
+                </div>
+              </>
             ) : (
               <div className="cortex-player-placeholder">
                 <span>📺</span>
