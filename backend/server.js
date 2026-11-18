@@ -1,4 +1,5 @@
 import 'dotenv/config';
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import cors from 'cors';
 import express from 'express';
 import fs from 'node:fs';
