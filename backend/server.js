@@ -9,146 +9,191 @@ import { fileURLToPath } from 'node:url';
 const app = express();
 const PORT = process.env.PORT || 3001;
 const SERVICE_NAME = 'pxt-player-api';
-const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 30000);
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 IPTVSmartersPlayer';
+const REQUEST_TIMEOUT_MS = Number(process.env.XTREAM_TIMEOUT_MS || 25000);
+const DEFAULT_USER_AGENT = 'VLC/3.0.20 LibVLC/3.0.20';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDistPath = resolveFrontendDistPath();
 
-// Desativa redirecionamentos forçados de HTTPS (HSTS) para aceitar HTTP puro e recursos mistos
+// Cabeçalhos limpos sem rastros de proxy que causam bloqueio 403 em servidores IPTV
+const CLEAN_OUTBOUND_HEADERS = {
+  'User-Agent': 'IPTVSmartersPlayer',
+  Accept: '*/*',
+};
+
+// Desativa HSTS para aceitar tanto HTTP quanto HTTPS de forma transparente
 app.use((_req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=0');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Private-Network', 'true');
   next();
 });
 
-// Libera CORS tanto para HTTP puro quanto HTTPS em qualquer domínio/IP
-const corsOptions = {
+// Configuração robusta de CORS
+app.use(cors({
   origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Accept', 'Range', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'],
   optionsSuccessStatus: 204,
-};
+}));
 
+app.use(express.json({ limit: '512kb' }));
+
+// Health Check
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: SERVICE_NAME });
+  res.json({ ok: true, service: SERVICE_NAME, status: 'online' });
 });
 
-app.use('/api', cors(corsOptions));
-app.options('/api/*', cors(corsOptions));
-app.use('/api', express.json({ limit: '64kb' }));
+/**
+ * 1. Endpoint genérico de Ações Xtream (get_live_categories, get_live_streams, etc.)
+ * Permite que o frontend consulte qualquer parte do catálogo através do proxy HTTPS
+ */
+app.get('/api/xtream/action', async (req, res) => {
+  const { server, username, password, action } = req.query;
 
-app.post('/api/xtream/validate', async (req, res) => {
-  const { server, username, password } = req.body || {};
-
-  if (!server || !username || !password) {
-    return res.status(400).json({
-      ok: false,
-      error: 'server, username and password are required.',
-    });
+  if (!server || !username || !password || !action) {
+    return res.status(400).json({ ok: false, error: 'server, username, password e action são obrigatórios.' });
   }
 
   let apiUrl;
-
   try {
     apiUrl = new URL('/player_api.php', normalizeServerUrl(server));
-    apiUrl.searchParams.set('username', username);
-    apiUrl.searchParams.set('password', password);
-  } catch (_error) {
-    return res.status(400).json({
-      ok: false,
-      error: 'server must be a valid http or https URL.',
-    });
-  }
-
-  try {
-    const clientIp = getClientIp(req);
-    const data = await fetchXtreamJson(apiUrl, null, REQUEST_TIMEOUT_MS, clientIp);
-    const userInfo = data?.user_info || {};
-    const catalog = await buildXtreamCatalog({ apiUrl, initialData: data, clientIp });
-
-    return res.json({
-      ok: true,
-      status: userInfo.status ?? null,
-      auth: userInfo.auth ?? null,
-      username: userInfo.username ?? null,
-      exp_date: userInfo.exp_date ?? null,
-      max_connections: userInfo.max_connections ?? null,
-      active_cons: userInfo.active_cons ?? null,
-      allowed_output_formats: userInfo.allowed_output_formats ?? [],
-      catalog,
-    });
-  } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-
-    return res.status(error?.status || (isAbort ? 504 : 502)).json({
-      ok: false,
-      error: error?.publicMessage || (isAbort
-        ? 'Xtream API request timed out.'
-        : 'Could not validate credentials with Xtream API.'),
-    });
-  }
-});
-
-app.get('/api/stream-proxy', async (req, res) => {
-  const requestedUrl = req.query?.url;
-
-  if (!requestedUrl || typeof requestedUrl !== 'string') {
-    return res.status(400).json({ ok: false, error: 'url query parameter is required.' });
-  }
-
-  let streamUrl;
-
-  try {
-    streamUrl = normalizeStreamUrl(requestedUrl);
-  } catch (_error) {
-    return res.status(400).json({ ok: false, error: 'url must be a valid http or https URL.' });
+    apiUrl.searchParams.set('username', String(username).trim());
+    apiUrl.searchParams.set('password', String(password).trim());
+    apiUrl.searchParams.set('action', String(action).trim());
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: 'URL do servidor inválida.' });
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    const clientIp = getClientIp(req);
-    const userAgents = [
-      'IPTVSmartersPlayer',
-      'VLC/3.0.20 LibVLC/3.0.20',
-      'Lavf/60.3.100',
-      DEFAULT_USER_AGENT,
-    ];
+    const upstream = await fetch(apiUrl.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      headers: CLEAN_OUTBOUND_HEADERS,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
 
-    let upstreamResponse = null;
-    for (const ua of userAgents) {
-      const proxyHeaders = {
-        Accept: req.get('accept') || 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
-        'User-Agent': ua,
-        Connection: 'keep-alive',
-      };
-
-      if (clientIp) {
-        proxyHeaders['X-Forwarded-For'] = clientIp;
-        proxyHeaders['X-Real-IP'] = clientIp;
-      }
-
-      const range = req.get('range');
-      if (range) {
-        proxyHeaders.Range = range;
-      }
-
-      upstreamResponse = await fetch(streamUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: proxyHeaders,
-        signal: controller.signal,
-      });
-
-      if (upstreamResponse.ok || upstreamResponse.status === 206 || upstreamResponse.status !== 403) {
-        break;
-      }
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ ok: false, error: `Upstream HTTP ${upstream.status}` });
     }
+
+    const data = await upstream.json();
+    return res.json(data);
+  } catch (error) {
+    clearTimeout(timeout);
+    return res.status(error.name === 'AbortError' ? 504 : 502).json({
+      ok: false,
+      error: error.message || 'Falha ao buscar dados no servidor de origem.',
+    });
+  }
+});
+
+/**
+ * 2. Validação de Conta Xtream
+ */
+app.post('/api/xtream/validate', async (req, res) => {
+  const { server, username, password } = req.body || {};
+
+  if (!server || !username || !password) {
+    return res.status(400).json({ ok: false, error: 'server, username e password são obrigatórios.' });
+  }
+
+  let apiUrl;
+  try {
+    apiUrl = new URL('/player_api.php', normalizeServerUrl(server));
+    apiUrl.searchParams.set('username', String(username).trim());
+    apiUrl.searchParams.set('password', String(password).trim());
+  } catch (_error) {
+    return res.status(400).json({ ok: false, error: 'server deve ser uma URL http ou https válida.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const upstream = await fetch(apiUrl.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      headers: CLEAN_OUTBOUND_HEADERS,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({
+        ok: false,
+        error: `Servidor retornou HTTP ${upstream.status}`,
+      });
+    }
+
+    const data = await upstream.json();
+    const userInfo = data?.user_info || {};
+
+    if (userInfo.auth === 0) {
+      return res.status(401).json({ ok: false, error: 'Usuário ou senha incorretos.' });
+    }
+
+    // Retorna a autenticação imediatamente com rapidez (200ms)
+    // O catálogo é buscado de forma incremental/sob demanda pelo proxy /api/xtream/action
+    return res.json({
+      ok: true,
+      status: userInfo.status ?? 'Active',
+      auth: userInfo.auth ?? 1,
+      username: userInfo.username ?? username,
+      exp_date: userInfo.exp_date ?? null,
+      max_connections: userInfo.max_connections ?? null,
+      active_cons: userInfo.active_cons ?? null,
+      allowed_output_formats: userInfo.allowed_output_formats ?? ['m3u8', 'ts'],
+      server_info: data?.server_info || null,
+      user_info: userInfo,
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    const isAbort = error.name === 'AbortError';
+    return res.status(isAbort ? 504 : 502).json({
+      ok: false,
+      error: isAbort ? 'Tempo esgotado ao contatar o servidor IPTV.' : (error.message || 'Erro ao validar credenciais.'),
+    });
+  }
+});
+
+/**
+ * 3. Proxy de Fluxo de Vídeo com Reescrita Completa de .m3u8
+ */
+app.get('/api/stream-proxy', async (req, res) => {
+  const requestedUrl = req.query?.url;
+
+  if (!requestedUrl || typeof requestedUrl !== 'string') {
+    return res.status(400).json({ ok: false, error: 'Parâmetro url é obrigatório.' });
+  }
+
+  let streamUrl;
+  try {
+    streamUrl = normalizeStreamUrl(requestedUrl);
+  } catch (_error) {
+    return res.status(400).json({ ok: false, error: 'URL de stream inválida.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const proxyHeaders = { ...CLEAN_OUTBOUND_HEADERS };
+    const range = req.get('range');
+    if (range) {
+      proxyHeaders.Range = range;
+    }
+
+    const upstreamResponse = await fetch(streamUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: proxyHeaders,
+      signal: controller.signal,
+    });
 
     clearTimeout(timeout);
 
@@ -163,185 +208,202 @@ app.get('/api/stream-proxy', async (req, res) => {
       return res.end();
     }
 
+    // Intercepta e reescreve links do arquivo .m3u8 para evitar Mixed Content
     if (isManifest) {
-      const manifest = await upstreamResponse.text();
-      return res.send(rewriteM3u8Manifest(manifest, upstreamResponse.url || streamUrl.toString(), req));
+      const manifestText = await upstreamResponse.text();
+      const rewritten = rewriteM3u8Manifest(manifestText, upstreamResponse.url || streamUrl.toString());
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      return res.send(rewritten);
     }
 
+    // Para pedaços binários (.ts, .mp4, etc.), repassa o fluxo
     return Readable.fromWeb(upstreamResponse.body).pipe(res);
   } catch (error) {
     clearTimeout(timeout);
-
     if (res.headersSent) {
       return res.destroy(error);
     }
-
-    const isAbort = error?.name === 'AbortError';
+    const isAbort = error.name === 'AbortError';
     return res.status(isAbort ? 504 : 502).json({
       ok: false,
-      error: isAbort ? 'Stream proxy request timed out.' : 'Could not proxy stream URL.',
+      error: isAbort ? 'Stream proxy timed out.' : 'Não foi possível reproduzir o fluxo.',
     });
   }
 });
 
+/**
+ * 4. Resolução de Redirecionamento
+ */
 app.post('/api/stream/resolve', async (req, res) => {
   const { originalUrl, url } = req.body || {};
   const requestedUrl = originalUrl || url;
 
   if (!requestedUrl) {
-    return res.status(400).json({
-      ok: false,
-      error: 'originalUrl is required.',
-    });
-  }
-
-  let streamUrl;
-
-  try {
-    streamUrl = normalizeStreamUrl(requestedUrl);
-  } catch (_error) {
-    return res.status(400).json({
-      ok: false,
-      error: 'url must be a valid http or https URL.',
-    });
+    return res.status(400).json({ ok: false, error: 'originalUrl é obrigatório.' });
   }
 
   try {
-    const resolvedStream = await resolveStreamRedirect(streamUrl);
+    const streamUrl = normalizeStreamUrl(requestedUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(streamUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: CLEAN_OUTBOUND_HEADERS,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    await response.body?.cancel();
+
+    const finalUrl = response.url || streamUrl.toString();
+
     return res.json({
       ok: true,
-      ...resolvedStream,
+      originalUrl: streamUrl.toString(),
+      finalUrl,
+      statusCode: response.status,
+      contentType: response.headers.get('content-type') || '',
+      redirected: response.redirected || finalUrl !== streamUrl.toString(),
     });
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(error?.status || (isAbort ? 504 : 502)).json({
+    return res.status(502).json({
       ok: false,
-      error: error?.publicMessage || (isAbort
-        ? 'Stream URL resolve request timed out.'
-        : 'Could not resolve stream URL.'),
-      originalUrl: streamUrl.toString(),
+      error: error.message || 'Falha ao resolver URL de reprodução.',
     });
   }
 });
 
+/**
+ * 5. Informações da Série
+ */
 app.post('/api/xtream/series-info', async (req, res) => {
   const { server, username, password, seriesId } = req.body || {};
 
   if (!server || !username || !password || !seriesId) {
-    return res.status(400).json({
-      ok: false,
-      error: 'server, username, password and seriesId are required.',
-    });
+    return res.status(400).json({ ok: false, error: 'server, username, password e seriesId são obrigatórios.' });
   }
 
-  let apiUrl;
-
   try {
-    apiUrl = new URL('/player_api.php', normalizeServerUrl(server));
-    apiUrl.searchParams.set('username', username);
-    apiUrl.searchParams.set('password', password);
+    const apiUrl = new URL('/player_api.php', normalizeServerUrl(server));
+    apiUrl.searchParams.set('username', String(username).trim());
+    apiUrl.searchParams.set('password', String(password).trim());
     apiUrl.searchParams.set('action', 'get_series_info');
-    apiUrl.searchParams.set('series_id', String(seriesId));
-  } catch (_error) {
-    return res.status(400).json({
-      ok: false,
-      error: 'server must be a valid http or https URL.',
-    });
-  }
+    apiUrl.searchParams.set('series_id', String(seriesId).trim());
 
-  try {
-    const clientIp = getClientIp(req);
-    const data = await fetchXtreamJson(apiUrl, null, REQUEST_TIMEOUT_MS, clientIp);
-    return res.json(data);
-  } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(error?.status || (isAbort ? 504 : 502)).json({
-      ok: false,
-      error: error?.publicMessage || (isAbort
-        ? 'Xtream API request timed out.'
-        : 'Could not load series info from Xtream API.'),
-    });
-  }
-});
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
-app.use('/api', (_req, res) => {
-  return res.status(404).json({ ok: false, error: 'API route not found.' });
-});
-
-if (frontendDistPath) {
-  app.use(express.static(frontendDistPath, {
-    fallthrough: true,
-  }));
-}
-
-app.get('*', (_req, res, next) => {
-  if (!frontendDistPath) {
-    return res.status(503).json({
-      ok: false,
-      error: 'Frontend build not found. Run npm run build before starting the server.',
-    });
-  }
-
-  return res.sendFile(path.join(frontendDistPath, 'index.html'), (error) => {
-    if (error) next(error);
-  });
-});
-
-app.use((err, _req, res, _next) => {
-  if (err?.message === 'Origin not allowed by CORS') {
-    return res.status(403).json({ ok: false, error: err.message });
-  }
-
-  return res.status(500).json({ ok: false, error: 'Internal server error.' });
-});
-
-function getClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.socket?.remoteAddress || '';
-}
-
-async function resolveStreamRedirect(streamUrl) {
-  return requestStreamHeaders(streamUrl);
-}
-
-async function requestStreamHeaders(streamUrl) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(streamUrl, {
+    const upstream = await fetch(apiUrl.toString(), {
       method: 'GET',
       redirect: 'follow',
-      headers: {
-        Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*',
-        'User-Agent': DEFAULT_USER_AGENT,
-      },
+      headers: CLEAN_OUTBOUND_HEADERS,
       signal: controller.signal,
     });
-
-    await response.body?.cancel();
-
-    const originalUrl = streamUrl.toString();
-    const finalUrl = response.url || originalUrl;
-
-    return {
-      originalUrl,
-      finalUrl,
-      statusCode: response.status,
-      contentType: response.headers.get('content-type') || '',
-      redirected: response.redirected || finalUrl !== originalUrl,
-    };
-  } catch (error) {
-    if (!error.status && error?.name !== 'AbortError') {
-      error.status = 502;
-    }
-    throw error;
-  } finally {
     clearTimeout(timeout);
+
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ ok: false, error: `Upstream HTTP ${upstream.status}` });
+    }
+
+    const data = await upstream.json();
+    return res.json(data);
+  } catch (error) {
+    return res.status(502).json({ ok: false, error: error.message || 'Falha ao buscar episódios da série.' });
   }
+});
+
+// Arquivos estáticos do frontend (dist)
+if (frontendDistPath) {
+  app.use(express.static(frontendDistPath));
+
+  app.get(/^(?!\/api).*/, (_req, res, next) => {
+    return res.sendFile(path.join(frontendDistPath, 'index.html'), (error) => {
+      if (error) next(error);
+    });
+  });
+}
+
+// Middleware global de erro
+app.use((err, _req, res, _next) => {
+  console.error('[SERVER ERROR]', err);
+  return res.status(500).json({ ok: false, error: err.message || 'Erro interno do servidor.' });
+});
+
+// ==========================================
+// FUNÇÕES AUXILIARES
+// ==========================================
+
+async function buildQuickCatalog(apiUrl) {
+  async function fetchAction(action) {
+    try {
+      const u = new URL(apiUrl.toString());
+      u.searchParams.set('action', action);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(u.toString(), {
+        headers: CLEAN_OUTBOUND_HEADERS,
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (r.ok) {
+        const j = await r.json();
+        return Array.isArray(j) ? j : [];
+      }
+    } catch (_e) {}
+    return [];
+  }
+
+  const [
+    liveCategories,
+    movieCategories,
+    seriesCategories,
+    liveStreams,
+    vodStreams,
+    series,
+  ] = await Promise.all([
+    fetchAction('get_live_categories'),
+    fetchAction('get_vod_categories'),
+    fetchAction('get_series_categories'),
+    fetchAction('get_live_streams'),
+    fetchAction('get_vod_streams'),
+    fetchAction('get_series'),
+  ]);
+
+  return {
+    liveCategories,
+    movieCategories,
+    seriesCategories,
+    liveStreams,
+    vodStreams,
+    series,
+  };
+}
+
+function rewriteM3u8Manifest(manifest, manifestUrl) {
+  const baseUrl = manifestUrl.substring(0, manifestUrl.lastIndexOf('/') + 1);
+
+  return manifest.split('\n').map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+
+    if (trimmed.startsWith('#')) {
+      // Reescreve atributos URI="..." (como chaves de criptografia e mapas de inicialização)
+      return line.replace(/URI="([^"]+)"/g, (_match, uri) => {
+        const absolute = uri.startsWith('http://') || uri.startsWith('https://')
+          ? uri
+          : new URL(uri, baseUrl).toString();
+        return `URI="/api/stream-proxy?url=${encodeURIComponent(absolute)}"`;
+      });
+    }
+
+    // Linha de segmento de vídeo (.ts) ou sub-playlist
+    const absolute = trimmed.startsWith('http://') || trimmed.startsWith('https://')
+      ? trimmed
+      : new URL(trimmed, baseUrl).toString();
+
+    return `/api/stream-proxy?url=${encodeURIComponent(absolute)}`;
+  }).join('\n');
 }
 
 function getContentTypeFromUrl(url) {
@@ -370,37 +432,22 @@ function copyProxyResponseHeaders(headers, res, { includeLength }) {
   }
 }
 
-function rewriteM3u8Manifest(manifest, manifestUrl, req) {
-  const baseUrl = new URL(manifestUrl);
-
-  return manifest.split(/(\r?\n)/).map((part) => {
-    if (!part || /^\r?\n$/.test(part)) return part;
-
-    const trimmed = part.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      return rewriteM3u8AttributeUris(part, baseUrl, req);
-    }
-
-    return buildProxyUrl(new URL(trimmed, baseUrl), req);
-  }).join('');
-}
-
-function rewriteM3u8AttributeUris(line, baseUrl, req) {
-  return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${buildProxyUrl(new URL(uri, baseUrl), req)}"`);
-}
-
-function buildProxyUrl(targetUrl, _req) {
-  return `/api/stream-proxy?url=${encodeURIComponent(targetUrl.toString())}`;
-}
-
 function normalizeStreamUrl(url) {
   const streamUrl = new URL(url);
-
   if (!['http:', 'https:'].includes(streamUrl.protocol)) {
-    throw new Error('Invalid protocol');
+    throw new Error('Protocolo inválido');
   }
-
   return streamUrl;
+}
+
+function normalizeServerUrl(server) {
+  const trimmed = String(server || '').trim().replace(/\/+$/, '');
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const url = new URL(withProtocol);
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('Protocolo inválido');
+  }
+  return url;
 }
 
 function resolveFrontendDistPath() {
@@ -408,233 +455,7 @@ function resolveFrontendDistPath() {
     path.resolve(__dirname, '..', 'dist'),
     path.resolve(__dirname, 'dist'),
   ];
-
-  const distPath = candidatePaths.find((candidatePath) => (
-    fs.existsSync(path.join(candidatePath, 'index.html'))
-  ));
-
-  if (!distPath) {
-    console.warn(`Frontend build not found. Checked: ${candidatePaths.join(', ')}`);
-    return null;
-  }
-
-  return distPath;
-}
-
-async function fetchXtreamJson(apiUrl, action, customTimeoutMs, clientIp = '') {
-  const requestUrl = new URL(apiUrl);
-
-  if (action) {
-    requestUrl.searchParams.set('action', action);
-  }
-
-  const timeoutMs = customTimeoutMs || REQUEST_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const userAgents = [
-      'IPTVSmartersPlayer',
-      'IPTVSmarters/1.0',
-      'okhttp/4.9.0',
-      'VLC/3.0.20 LibVLC/3.0.20',
-      'Lavf/60.3.100',
-      DEFAULT_USER_AGENT,
-    ];
-    let lastStatus = 0;
-
-    for (const userAgent of userAgents) {
-      const headers = {
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-        'User-Agent': userAgent,
-        Connection: 'keep-alive',
-      };
-
-      if (clientIp) {
-        headers['X-Forwarded-For'] = clientIp;
-        headers['X-Real-IP'] = clientIp;
-      }
-
-      const xtreamResponse = await fetch(requestUrl, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-      });
-
-      if (xtreamResponse.ok) {
-        return await xtreamResponse.json();
-      }
-
-      lastStatus = xtreamResponse.status;
-
-      if (lastStatus !== 403 && lastStatus !== 401) {
-        break;
-      }
-    }
-
-    const error = new Error(`Xtream API responded with HTTP ${lastStatus}.`);
-    error.status = 502;
-    error.publicMessage = lastStatus === 403
-      ? 'O provedor bloqueou a conexão da nuvem (HTTP 403). Liberando conexão direta via HTTP.'
-      : `Xtream API responded with HTTP ${lastStatus}.`;
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function buildXtreamCatalog({ apiUrl, initialData, clientIp }) {
-  const normalizedFromInitialData = normalizeXtreamCatalog(initialData);
-
-  const hasInitialContent =
-    normalizedFromInitialData.liveStreams.length > 0 ||
-    normalizedFromInitialData.liveCategories.length > 0;
-
-  if (hasInitialContent) {
-    return normalizedFromInitialData;
-  }
-
-  const missingActions = [
-    ['liveCategories', 'get_live_categories'],
-    ['movieCategories', 'get_vod_categories'],
-    ['seriesCategories', 'get_series_categories'],
-    ['liveStreams', 'get_live_streams'],
-    ['vodStreams', 'get_vod_streams'],
-    ['series', 'get_series'],
-  ].filter(([catalogKey]) => normalizedFromInitialData[catalogKey].length === 0);
-
-  const actionResults = await Promise.allSettled(
-    missingActions.map(([, action]) => fetchXtreamJson(apiUrl, action, 6000, clientIp)),
-  );
-
-  const supplementalData = {};
-
-  actionResults.forEach((result, index) => {
-    if (result.status === 'fulfilled' && result.value) {
-      const [catalogKey] = missingActions[index];
-      supplementalData[catalogKey] = result.value;
-    }
-  });
-
-  const catalog = normalizeXtreamCatalog({
-    ...initialData,
-    ...supplementalData,
-    fetchedAt: new Date().toISOString(),
-  });
-
-  logMaskedLivePlaybackUrls({ apiUrl, liveStreams: catalog.liveStreams });
-
-  return catalog;
-}
-
-function normalizeXtreamCatalog(data = {}) {
-  const categories = Array.isArray(data.categories) ? data.categories : [];
-
-  return {
-    liveCategories: firstArray(
-      data.liveCategories,
-      data.live_categories,
-      data.available_channels?.liveCategories,
-      data.available_channels?.live_categories,
-      filterCategories(categories, ['live', 'channel']),
-    ),
-    movieCategories: firstArray(
-      data.movieCategories,
-      data.vodCategories,
-      data.movie_categories,
-      data.vod_categories,
-      data.available_channels?.movieCategories,
-      data.available_channels?.vodCategories,
-      data.available_channels?.movie_categories,
-      data.available_channels?.vod_categories,
-      filterCategories(categories, ['movie', 'vod']),
-    ),
-    seriesCategories: firstArray(
-      data.seriesCategories,
-      data.series_categories,
-      data.available_channels?.seriesCategories,
-      data.available_channels?.series_categories,
-      filterCategories(categories, ['series']),
-    ),
-    liveStreams: firstArray(
-      data.liveStreams,
-      data.live_streams,
-      data.available_channels,
-      data.available_channels?.liveStreams,
-      data.available_channels?.live_streams,
-    ),
-    vodStreams: firstArray(
-      data.vodStreams,
-      data.vod_streams,
-      data.available_channels?.vodStreams,
-      data.available_channels?.vod_streams,
-      data.available_channels?.movies,
-    ),
-    series: firstArray(
-      data.series,
-      data.available_channels?.series,
-    ),
-    user_info: data.user_info || null,
-    server_info: data.server_info || null,
-    fetchedAt: data.fetchedAt || new Date().toISOString(),
-  };
-}
-
-function createMaskedXtreamLiveUrl(apiUrl, streamId, extension) {
-  if (!streamId) return '';
-
-  const baseUrl = new URL(apiUrl);
-  const username = baseUrl.searchParams.get('username') || '';
-  const maskedPassword = '••••••';
-  const normalizedBase = `${baseUrl.protocol}//${baseUrl.host}`;
-  return `${normalizedBase}/live/${encodeURIComponent(username)}/${maskedPassword}/${encodeURIComponent(streamId)}.${extension}`;
-}
-
-function logMaskedLivePlaybackUrls({ apiUrl, liveStreams }) {
-  const firstLiveStream = Array.isArray(liveStreams) ? liveStreams.find((stream) => stream?.stream_id || stream?.id) : null;
-  const streamId = firstLiveStream?.stream_id || firstLiveStream?.id;
-
-  if (!streamId) return;
-
-  console.info('[LIVE TV] Xtream playback URL format', {
-    streamId: String(streamId),
-    primaryUrl: createMaskedXtreamLiveUrl(apiUrl, streamId, 'm3u8'),
-    fallbackUrl: createMaskedXtreamLiveUrl(apiUrl, streamId, 'ts'),
-  });
-}
-
-function firstArray(...candidates) {
-  const value = candidates.find((candidate) => Array.isArray(candidate));
-  return value || [];
-}
-
-function filterCategories(categories, typeHints) {
-  if (!categories.length) return [];
-
-  return categories.filter((category) => {
-    const searchable = [
-      category.category_type,
-      category.type,
-      category.kind,
-      category.content_type,
-      category.parent_type,
-    ].filter(Boolean).join(' ').toLowerCase();
-
-    return typeHints.some((hint) => searchable.includes(hint));
-  });
-}
-
-function normalizeServerUrl(server) {
-  const trimmed = String(server || '').trim().replace(/\/+$/, '');
-  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  const url = new URL(withProtocol);
-
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new Error('Invalid protocol');
-  }
-
-  return url;
+  return candidatePaths.find((p) => fs.existsSync(path.join(p, 'index.html'))) || null;
 }
 
 app.listen(PORT, '0.0.0.0', () => {

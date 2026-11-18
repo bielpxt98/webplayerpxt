@@ -66,9 +66,13 @@ const navigationItems = [
 
 function buildStreamProxyUrl(url) {
   if (!url) return ''
-  // Sempre entrega o stream direto para o navegador.
-  // Como o usuário está no Brasil (e o provedor IPTV ttvp2.live bloqueia datacenters estrangeiros com 403),
-  // a conexão direta do navegador é o único caminho que conecta e reproduz com sucesso.
+  if (url.startsWith('/api/stream-proxy')) return url
+  // Se a página estiver rodando em HTTPS (ex: Render), envelopa o fluxo no proxy
+  // para reescrever as playlists .m3u8 e evitar bloqueio de Mixed Content no navegador/mobile
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
+  if (isHttps || BACKEND_BASE_URL) {
+    return `${BACKEND_BASE_URL}/api/stream-proxy?url=${encodeURIComponent(url)}`
+  }
   return url
 }
 
@@ -174,16 +178,29 @@ function saveAccount(account) {
 
 async function fetchDirectXtreamCatalog(account, initialData) {
   const normServer = normalizeServer(account.server)
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
 
   async function fetchAction(action) {
     try {
-      const url = new URL('/player_api.php', normServer)
-      url.searchParams.set('username', account.username)
-      url.searchParams.set('password', account.password)
-      url.searchParams.set('action', action)
+      let targetUrl
+      if (isHttps || BACKEND_BASE_URL) {
+        const proxyUrl = new URL(`${BACKEND_BASE_URL || window.location.origin}/api/xtream/action`)
+        proxyUrl.searchParams.set('server', normServer)
+        proxyUrl.searchParams.set('username', account.username)
+        proxyUrl.searchParams.set('password', account.password)
+        proxyUrl.searchParams.set('action', action)
+        targetUrl = proxyUrl.toString()
+      } else {
+        const directUrl = new URL('/player_api.php', normServer)
+        directUrl.searchParams.set('username', account.username)
+        directUrl.searchParams.set('password', account.password)
+        directUrl.searchParams.set('action', action)
+        targetUrl = directUrl.toString()
+      }
+
       const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 10000)
-      const r = await fetch(url.toString(), {
+      const t = setTimeout(() => ctrl.abort(), 15000)
+      const r = await fetch(targetUrl, {
         headers: { Accept: 'application/json, text/plain, */*' },
         signal: ctrl.signal,
       })
@@ -193,7 +210,7 @@ async function fetchDirectXtreamCatalog(account, initialData) {
         return Array.isArray(json) ? json : []
       }
     } catch (err) {
-      console.warn(`[XTREAM DIRECT] Falha em ${action}:`, err.message)
+      console.warn(`[XTREAM CATALOG] Falha em ${action}:`, err.message)
     }
     return []
   }
@@ -223,9 +240,12 @@ async function fetchDirectXtreamCatalog(account, initialData) {
       m3uUrl.searchParams.set('password', account.password)
       m3uUrl.searchParams.set('type', 'm3u_plus')
       m3uUrl.searchParams.set('output', 'm3u8')
+      const targetM3u = isHttps || BACKEND_BASE_URL
+        ? `${BACKEND_BASE_URL || window.location.origin}/api/stream-proxy?url=${encodeURIComponent(m3uUrl.toString())}`
+        : m3uUrl.toString()
       const m3uCtrl = new AbortController()
-      const m3uT = setTimeout(() => m3uCtrl.abort(), 10000)
-      const m3uRes = await fetch(m3uUrl.toString(), { signal: m3uCtrl.signal })
+      const m3uT = setTimeout(() => m3uCtrl.abort(), 12000)
+      const m3uRes = await fetch(targetM3u, { signal: m3uCtrl.signal })
       clearTimeout(m3uT)
       if (m3uRes.ok) {
         const m3uText = await m3uRes.text()
@@ -262,7 +282,7 @@ async function fetchDirectXtreamCatalog(account, initialData) {
         }
       }
     } catch (e) {
-      console.warn('[M3U DIRECT] Falha no fallback get.php:', e.message)
+      console.warn('[M3U FALLBACK] Falha:', e.message)
     }
   }
 
@@ -280,86 +300,141 @@ async function fetchDirectXtreamCatalog(account, initialData) {
 }
 
 async function validateXtreamAccount(account) {
-  const directLoginUrl = buildXtreamLoginUrl(account)
-  if (!directLoginUrl) throw new Error('Preencha servidor, usuário e senha.')
-
-  // 1. Tenta validação direta pelo navegador do usuário (suporta HTTP puro e contorna bloqueio de datacenter)
-  const candidateUrls = [directLoginUrl]
-  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && /^http:\/\//i.test(directLoginUrl)) {
-    candidateUrls.push(directLoginUrl.replace(/^http:\/\//i, 'https://'))
+  const normServer = normalizeServer(account.server)
+  if (!normServer || !account.username?.trim() || !account.password?.trim()) {
+    throw new Error('Preencha servidor, usuário e senha.')
   }
 
-  for (const candidateUrl of candidateUrls) {
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 8000)
-      const directResponse = await fetch(candidateUrl, {
-        method: 'GET',
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
 
-      if (directResponse.ok) {
-        const data = await directResponse.json()
-        const userInfo = data?.user_info || {}
-        if (userInfo.auth === 1 || userInfo.status === 'Active') {
-          const effectiveAccount = candidateUrl.startsWith('https://')
-            ? { ...account, server: normalizeServer(account.server).replace(/^http:\/\//i, 'https://') }
-            : account
-          const catalog = await fetchDirectXtreamCatalog(effectiveAccount, data)
+  // 1. Em HTTPS (Render ou produção), todas as chamadas passam pelo proxy backend
+  // para evitar erro de Mixed Content no celular e bloqueios de CORS
+  if (isHttps || BACKEND_BASE_URL) {
+    const validateEndpoint = `${BACKEND_BASE_URL || window.location.origin}/api/xtream/validate`
+    const response = await fetch(validateEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server: normServer,
+        username: account.username.trim(),
+        password: account.password.trim(),
+      }),
+    })
 
-          return {
-            ok: true,
-            status: userInfo.status ?? null,
-            auth: userInfo.auth ?? null,
-            username: userInfo.username ?? null,
-            exp_date: userInfo.exp_date ?? null,
-            max_connections: userInfo.max_connections ?? null,
-            active_cons: userInfo.active_cons ?? null,
-            allowed_output_formats: userInfo.allowed_output_formats ?? [],
-            catalog,
-          }
-        } else if (userInfo.auth === 0) {
-          throw new Error('Usuário ou senha inválidos.')
-        }
+    if (!response.ok) {
+      let errorMessage = `HTTP ${response.status}`
+      try {
+        const errorBody = await response.json()
+        errorMessage = errorBody.error || errorMessage
+      } catch {
+        errorMessage = (await response.text()) || errorMessage
       }
-    } catch (directErr) {
-      if (directErr.message === 'Usuário ou senha inválidos.') {
-        throw directErr
-      }
-      console.info('Tentativa direta falhou, testando próxima opção...', directErr.message)
+      throw new Error(errorMessage)
+    }
+
+    const data = await response.json()
+    const userInfo = data?.user_info || data || {}
+    if (userInfo.auth === 0) {
+      throw new Error('Usuário ou senha inválidos.')
+    }
+
+    // Carrega o catálogo através das rotas de proxy HTTPS
+    const catalog = await fetchDirectXtreamCatalog(account, data)
+
+    return {
+      ok: true,
+      status: userInfo.status ?? 'Active',
+      auth: userInfo.auth ?? 1,
+      username: userInfo.username ?? account.username,
+      exp_date: userInfo.exp_date ?? null,
+      max_connections: userInfo.max_connections ?? null,
+      active_cons: userInfo.active_cons ?? null,
+      allowed_output_formats: userInfo.allowed_output_formats ?? ['m3u8', 'ts'],
+      catalog,
+      user_info: userInfo,
+      server_info: data?.server_info || {},
     }
   }
 
-  // 2. Fallback: via Backend API
-  const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/validate`, {
+  // 2. Ambiente HTTP puro local: tenta validação direta primeiro
+  const directLoginUrl = buildXtreamLoginUrl(account)
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8000)
+    const directResponse = await fetch(directLoginUrl, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+
+    if (directResponse.ok) {
+      const data = await directResponse.json()
+      const userInfo = data?.user_info || {}
+      if (userInfo.auth === 1 || userInfo.status === 'Active') {
+        const catalog = await fetchDirectXtreamCatalog(account, data)
+        return {
+          ok: true,
+          status: userInfo.status ?? null,
+          auth: userInfo.auth ?? null,
+          username: userInfo.username ?? null,
+          exp_date: userInfo.exp_date ?? null,
+          max_connections: userInfo.max_connections ?? null,
+          active_cons: userInfo.active_cons ?? null,
+          allowed_output_formats: userInfo.allowed_output_formats ?? [],
+          catalog,
+          user_info: userInfo,
+          server_info: data?.server_info || {},
+        }
+      } else if (userInfo.auth === 0) {
+        throw new Error('Usuário ou senha inválidos.')
+      }
+    }
+  } catch (directErr) {
+    if (directErr.message === 'Usuário ou senha inválidos.') {
+      throw directErr
+    }
+    console.info('Tentativa direta falhou, utilizando backend proxy...', directErr.message)
+  }
+
+  // Fallback via backend proxy
+  const response = await fetch(`${BACKEND_BASE_URL || window.location.origin}/api/xtream/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      server: account.server,
-      username: account.username,
-      password: account.password,
+      server: normServer,
+      username: account.username.trim(),
+      password: account.password.trim(),
     }),
   })
 
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}`
-
     try {
       const errorBody = await response.json()
       errorMessage = errorBody.error || errorMessage
     } catch {
-      errorMessage = await response.text() || errorMessage
+      errorMessage = (await response.text()) || errorMessage
     }
-
-    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && errorMessage.includes('403')) {
-      errorMessage = 'O provedor (ttvp2.live) recusa conexões de servidores em nuvem. Como o site está em HTTPS, libere o HTTP clicando no ícone do site > "Conteúdo inseguro: Permitir", ou acesse via HTTP puro.'
-    }
-
     throw new Error(errorMessage)
   }
 
-  return response.json()
+  const data = await response.json()
+  const userInfo = data?.user_info || data || {}
+  const catalog = await fetchDirectXtreamCatalog(account, data)
+
+  return {
+    ok: true,
+    status: userInfo.status ?? 'Active',
+    auth: userInfo.auth ?? 1,
+    username: userInfo.username ?? account.username,
+    exp_date: userInfo.exp_date ?? null,
+    max_connections: userInfo.max_connections ?? null,
+    active_cons: userInfo.active_cons ?? null,
+    allowed_output_formats: userInfo.allowed_output_formats ?? [],
+    catalog,
+    user_info: userInfo,
+    server_info: data?.server_info || {},
+  }
 }
 
 function getCatalogPayload(responseData) {
@@ -618,10 +693,42 @@ function buildSeriesInfoUrl(sessionCredentials, seriesId) {
 }
 
 async function fetchSeriesInfo(sessionCredentials, seriesId) {
-  const directUrl = buildSeriesInfoUrl(sessionCredentials, seriesId)
-  if (!directUrl) throw new Error('Dados da conta ou ID da série ausentes.')
+  if (!hasCompleteSessionCredentials(sessionCredentials) || !seriesId) {
+    throw new Error('Dados da conta ou ID da série ausentes.')
+  }
 
-  // 1. Tenta buscar direto pelo navegador do usuário (evita bloqueio 403 de datacenter)
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
+  const normServer = normalizeServer(sessionCredentials.server)
+
+  // 1. Em HTTPS (Render ou produção), busca as informações da série via proxy para evitar Mixed Content
+  if (isHttps || BACKEND_BASE_URL) {
+    const response = await fetch(`${BACKEND_BASE_URL || window.location.origin}/api/xtream/series-info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server: normServer,
+        username: sessionCredentials.username.trim(),
+        password: sessionCredentials.password.trim(),
+        seriesId: String(seriesId),
+      }),
+    })
+
+    if (!response.ok) {
+      let errorMessage = `HTTP ${response.status}`
+      try {
+        const errorBody = await response.json()
+        errorMessage = errorBody.error || errorMessage
+      } catch {
+        errorMessage = (await response.text()) || errorMessage
+      }
+      throw new Error(errorMessage)
+    }
+
+    return response.json()
+  }
+
+  // 2. Ambiente HTTP puro: tenta direto primeiro
+  const directUrl = buildSeriesInfoUrl(sessionCredentials, seriesId)
   try {
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 8000)
@@ -634,18 +741,18 @@ async function fetchSeriesInfo(sessionCredentials, seriesId) {
       return await directRes.json()
     }
   } catch (err) {
-    console.warn('Tentativa direta de series-info falhou, usando fallback backend...', err.message)
+    console.warn('Tentativa direta de series-info falhou, usando proxy...', err.message)
   }
 
-  // 2. Fallback via backend proxy
-  const response = await fetch(`${BACKEND_BASE_URL}/api/xtream/series-info`, {
+  // Fallback via backend proxy
+  const response = await fetch(`${BACKEND_BASE_URL || window.location.origin}/api/xtream/series-info`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      server: sessionCredentials.server,
-      username: sessionCredentials.username,
-      password: sessionCredentials.password,
-      seriesId,
+      server: normServer,
+      username: sessionCredentials.username.trim(),
+      password: sessionCredentials.password.trim(),
+      seriesId: String(seriesId),
     }),
   })
 
@@ -655,7 +762,7 @@ async function fetchSeriesInfo(sessionCredentials, seriesId) {
       const errorBody = await response.json()
       errorMessage = errorBody.error || errorMessage
     } catch {
-      errorMessage = await response.text() || errorMessage
+      errorMessage = (await response.text()) || errorMessage
     }
     throw new Error(errorMessage)
   }

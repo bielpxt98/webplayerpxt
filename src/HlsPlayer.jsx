@@ -82,19 +82,22 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
   // Lista de tentativas automáticas para contornar bloqueios de HTTP puro / Mixed Content / CORS
   const candidates = (() => {
     if (!url) return []
-    const list = [url]
-    if (fallbackUrl && !list.includes(fallbackUrl)) {
-      list.push(fallbackUrl)
-    }
+    const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
     const proxiedMain = buildBackendProxyUrl(url)
-    if (proxiedMain && !list.includes(proxiedMain)) {
-      list.push(proxiedMain)
-    }
-    if (fallbackUrl) {
-      const proxiedFallback = buildBackendProxyUrl(fallbackUrl)
-      if (proxiedFallback && !list.includes(proxiedFallback)) {
-        list.push(proxiedFallback)
-      }
+    const proxiedFallback = fallbackUrl ? buildBackendProxyUrl(fallbackUrl) : ''
+    const list = []
+
+    if (isHttps) {
+      // Em HTTPS (Render/mobile), usa o proxy em 1º lugar para não disparar erro de Mixed Content
+      if (proxiedMain) list.push(proxiedMain)
+      if (proxiedFallback && !list.includes(proxiedFallback)) list.push(proxiedFallback)
+      if (!list.includes(url)) list.push(url)
+      if (fallbackUrl && !list.includes(fallbackUrl)) list.push(fallbackUrl)
+    } else {
+      list.push(url)
+      if (fallbackUrl && !list.includes(fallbackUrl)) list.push(fallbackUrl)
+      if (proxiedMain && !list.includes(proxiedMain)) list.push(proxiedMain)
+      if (proxiedFallback && !list.includes(proxiedFallback)) list.push(proxiedFallback)
     }
     return list
   })()
