@@ -908,7 +908,7 @@ async function resolvePlaybackUrl(originalUrl) {
   return { finalUrl: originalUrl, statusCode: 200, redirected: false }
 }
 
-function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack, onLogout }) {
+function LiveTvScreen({ channels, categories = [], searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack, onLogout }) {
   const safeChannels = useMemo(() => Array.isArray(channels) ? channels : [], [channels])
   const safeSearchIndex = useMemo(() => Array.isArray(searchIndex) ? searchIndex : [], [searchIndex])
   const safeFavorites = useMemo(() => Array.isArray(favorites) ? favorites : [], [favorites])
@@ -923,17 +923,32 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
 
   // Preserva 100% a ordem natural original da lista do servidor IPTV (os melhores canais e categorias no topo)
   const groups = useMemo(() => {
-    const groupMap = new Map()
+    const groupCounts = new Map()
     for (const channel of safeChannels) {
       const groupName = channel?.grupo || 'Sem categoria'
-      if (!groupMap.has(groupName)) {
-        groupMap.set(groupName, 1)
-      } else {
-        groupMap.set(groupName, groupMap.get(groupName) + 1)
-      }
+      groupCounts.set(groupName, (groupCounts.get(groupName) || 0) + 1)
     }
-    return Array.from(groupMap.entries()).map(([name, count]) => ({ name, count }))
-  }, [safeChannels])
+
+    if (Array.isArray(categories) && categories.length > 0) {
+      const ordered = []
+      const seen = new Set()
+      for (const cat of categories) {
+        const name = cat?.category_name || cat?.name
+        if (name && groupCounts.has(name) && !seen.has(name)) {
+          seen.add(name)
+          ordered.push({ name, count: groupCounts.get(name) })
+        }
+      }
+      for (const [name, count] of groupCounts.entries()) {
+        if (!seen.has(name)) {
+          ordered.push({ name, count })
+        }
+      }
+      return ordered
+    }
+
+    return Array.from(groupCounts.entries()).map(([name, count]) => ({ name, count }))
+  }, [safeChannels, categories])
 
   const activeGroup = isFavoritesOnly
     ? 'Favoritos'
@@ -962,8 +977,12 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     : (displayedChannels[0] || null)
 
   const activeStreamId = activeChannel?.streamId || activeChannel?.id
-  const activePlaybackUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') : ''
-  const activeFallbackTsUrl = activeChannel ? buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') : ''
+  const activePlaybackUrl = activeChannel
+    ? (buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'm3u8') || activeChannel.url || '')
+    : ''
+  const activeFallbackTsUrl = activeChannel
+    ? (buildXtreamPlaybackUrl(sessionCredentials, 'live', activeStreamId, 'ts') || activeChannel.fallbackUrl || '')
+    : ''
   const activeCacheKey = activeChannel && activePlaybackUrl ? getPlaybackCacheKey({ type: 'live', streamId: activeStreamId, originalUrl: activePlaybackUrl }) : ''
   const playerPlaybackUrl = resolvedPlaybackUrl || activePlaybackUrl
 
@@ -976,11 +995,10 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
 
   const updatePlaybackDebug = useCallback((debugInfo) => {
     setPlaybackDebug((currentDebug) => ({ ...currentDebug, ...debugInfo }))
-    if (debugInfo?.errorSource === 'hls-fatal' || debugInfo?.errorSource?.includes('video-error')) {
+    if (debugInfo?.errorSource === 'hls-fatal') {
       clearCachedPlaybackUrl(activeCacheKey)
-      if (activeChannel) selectChannel(activeChannel)
     }
-  }, [activeCacheKey, activeChannel])
+  }, [activeCacheKey])
 
   async function selectChannel(channel, event) {
     event?.preventDefault()
@@ -1252,6 +1270,7 @@ function CatalogScreen({
   title,
   icon,
   items,
+  categories = [],
   searchIndex,
   favorites,
   onToggleFavorite,
@@ -1279,17 +1298,32 @@ function CatalogScreen({
 
   // Preserva 100% a ordem natural original da lista do servidor IPTV (os melhores títulos e categorias no topo)
   const groups = useMemo(() => {
-    const groupMap = new Map()
+    const groupCounts = new Map()
     for (const item of safeItems) {
       const groupName = item?.grupo || 'Sem categoria'
-      if (!groupMap.has(groupName)) {
-        groupMap.set(groupName, 1)
-      } else {
-        groupMap.set(groupName, groupMap.get(groupName) + 1)
-      }
+      groupCounts.set(groupName, (groupCounts.get(groupName) || 0) + 1)
     }
-    return Array.from(groupMap.entries()).map(([name, count]) => ({ name, count }))
-  }, [safeItems])
+
+    if (Array.isArray(categories) && categories.length > 0) {
+      const ordered = []
+      const seen = new Set()
+      for (const cat of categories) {
+        const name = cat?.category_name || cat?.name
+        if (name && groupCounts.has(name) && !seen.has(name)) {
+          seen.add(name)
+          ordered.push({ name, count: groupCounts.get(name) })
+        }
+      }
+      for (const [name, count] of groupCounts.entries()) {
+        if (!seen.has(name)) {
+          ordered.push({ name, count })
+        }
+      }
+      return ordered
+    }
+
+    return Array.from(groupCounts.entries()).map(([name, count]) => ({ name, count }))
+  }, [safeItems, categories])
 
   const activeGroup = isFavoritesOnly
     ? 'Favoritos'
@@ -1665,7 +1699,7 @@ function MediaDetail({
   )
 }
 
-function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack, onLogout }) {
+function MoviesScreen({ sessionCredentials, items, categories = [], searchIndex, favorites, onToggleFavorite, onBack, onLogout }) {
   const [selectedMovie, setSelectedMovie] = useState(null)
   const [playingMovie, setPlayingMovie] = useState(null)
   const originalMovieUrl = playingMovie ? getPlayableItemUrl(playingMovie, sessionCredentials) : ''
@@ -1685,6 +1719,7 @@ function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
       title="MOVIES"
       icon="🎬"
       items={items}
+      categories={categories}
       searchIndex={searchIndex}
       favorites={favorites}
       onToggleFavorite={onToggleFavorite}
@@ -1715,7 +1750,7 @@ function MoviesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
   )
 }
 
-function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onToggleFavorite, onBack, onLogout }) {
+function SeriesScreen({ sessionCredentials, items, categories = [], searchIndex, favorites, onToggleFavorite, onBack, onLogout }) {
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [seriesInfo, setSeriesInfo] = useState(null)
   const [selectedSeason, setSelectedSeason] = useState('')
@@ -1831,6 +1866,7 @@ function SeriesScreen({ sessionCredentials, items, searchIndex, favorites, onTog
       title="SERIES"
       icon="▣"
       items={items}
+      categories={categories}
       searchIndex={searchIndex}
       favorites={favorites}
       onToggleFavorite={onToggleFavorite}
@@ -2228,7 +2264,7 @@ function App() {
         type: 'success',
         message: `${successMessage}. Catálogo pronto: ${counts.live || loadedCatalog.live.length} canais ao vivo.`,
       })
-      setScreen('home')
+      setScreen((currentScreen) => (currentScreen === 'account' ? 'home' : currentScreen))
       if (typeof window !== 'undefined' && window.screen?.orientation?.lock) {
         try {
           window.screen.orientation.lock('landscape').catch(() => {})
@@ -2333,6 +2369,7 @@ function App() {
       ) : screen === 'live' ? (
         <LiveTvScreen
           channels={mediaManager.live || []}
+          categories={mediaManager.liveCategories || []}
           searchIndex={mediaManager.searchIndex?.live || []}
           favorites={favorites || []}
           onToggleFavorite={toggleFavoriteItem}
@@ -2344,6 +2381,7 @@ function App() {
         <MoviesScreen
           sessionCredentials={sessionCredentials}
           items={mediaManager.movies || []}
+          categories={mediaManager.movieCategories || []}
           searchIndex={mediaManager.searchIndex?.movies || []}
           favorites={favorites || []}
           onToggleFavorite={toggleFavoriteItem}
@@ -2354,6 +2392,7 @@ function App() {
         <SeriesScreen
           sessionCredentials={sessionCredentials}
           items={mediaManager.series || []}
+          categories={mediaManager.seriesCategories || []}
           searchIndex={mediaManager.searchIndex?.series || []}
           favorites={favorites || []}
           onToggleFavorite={toggleFavoriteItem}

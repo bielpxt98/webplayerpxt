@@ -17,6 +17,9 @@ function createEmptyCatalog() {
     others: [],
     all: [],
     groups: {},
+    liveCategories: [],
+    movieCategories: [],
+    seriesCategories: [],
     searchIndex: { live: [], movies: [], series: [] },
     loadedAt: null,
     sourceUrl: '',
@@ -144,8 +147,15 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
     catalog.series = Array.isArray(apiData.series) ? apiData.series : []
     catalog.all = [...catalog.live, ...catalog.movies, ...catalog.series]
     catalog.groups = apiData.groups || {}
+    catalog.liveCategories = Array.isArray(apiData?.liveCategories) ? apiData.liveCategories : []
+    catalog.movieCategories = Array.isArray(apiData?.movieCategories) ? apiData.movieCategories : []
+    catalog.seriesCategories = Array.isArray(apiData?.seriesCategories) ? apiData.seriesCategories : []
     return attachSearchIndexes(catalog)
   }
+
+  catalog.liveCategories = Array.isArray(apiData?.liveCategories) ? apiData.liveCategories : []
+  catalog.movieCategories = Array.isArray(apiData?.movieCategories) ? apiData.movieCategories : []
+  catalog.seriesCategories = Array.isArray(apiData?.seriesCategories) ? apiData.seriesCategories : []
 
   const liveCategoryMap = indexCategories(apiData?.liveCategories)
   const movieCategoryMap = indexCategories(apiData?.movieCategories)

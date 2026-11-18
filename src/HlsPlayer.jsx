@@ -196,33 +196,18 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
 
       if (isLiveStream) {
         Object.assign(hlsConfig, {
-          liveSyncDurationCount: 1, // Começa no último segmento emitido (colado no ao vivo real da TV)
-          liveMaxLatencyDurationCount: 2.5, // Nunca deixa ficar mais de 2.5 segmentos atrás
-          liveSyncDuration: 2.5, // Alvo de latência ultra baixa de ~2.5 segundos (igual app nativo)
-          liveMaxLatencyDuration: 5, // Latência máxima tolerada de 5 segundos
-          maxLiveSyncPlaybackRate: 1.25, // Acelera suavemente para zerar qualquer atraso
+          liveSyncDurationCount: 2, // Mantém colado ao vivo com apenas 2 segmentos sem estourar o buffer
+          liveMaxLatencyDurationCount: 5, // Recupera se atrasar mais de 5 segmentos
+          maxLiveSyncPlaybackRate: 1.15, // Acelera suavemente para zerar atrasos
           liveDurationInfinity: true, // Transmissão AO VIVO contínua
-          lowLatencyMode: true,
-          initialLiveManifestSize: 1, // Começa a tocar imediatamente no 1º segmento (abertura instantânea)
-          maxBufferLength: 6, // Buffer enxuto e colado na transmissão em tempo real
-          maxMaxBufferLength: 10,
+          maxBufferLength: 12,
+          maxMaxBufferLength: 24,
           backBufferLength: 15,
         })
       }
 
       const hls = new Hls(hlsConfig)
       hlsRef.current = hls
-
-      hls.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
-        if (isLiveStream && data?.details?.live && video && video.readyState >= 1) {
-          try {
-            const liveEdge = data.details.edge || (data.details.totalduration - (data.details.targetduration || 4))
-            if (Number.isFinite(liveEdge) && liveEdge > 0 && Math.abs(video.currentTime - liveEdge) > 8) {
-              video.currentTime = liveEdge
-            }
-          } catch (_) {}
-        }
-      })
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         setPlayerStatus('ready')
@@ -235,11 +220,6 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
         }
 
         playVideo(video, onPlaybackUrlChange)
-        if (isLiveStream && video && video.readyState >= 1 && typeof hls.liveSyncPosition === 'number' && hls.liveSyncPosition > 0) {
-          try {
-            video.currentTime = hls.liveSyncPosition
-          } catch (_) {}
-        }
       })
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
