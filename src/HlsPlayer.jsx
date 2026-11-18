@@ -264,7 +264,7 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
     <div className="hls-player" aria-live="polite">
       <video ref={videoRef} controls playsInline title={title || 'Player LIVE TV'} />
       {playerStatus === 'idle' && <div className="player-overlay">Selecione um item para iniciar</div>}
-      {playerStatus === 'loading' && <div className="player-overlay">Carregando player...</div>}
+      {playerStatus === 'loading' && <div className="cortex-mini-spinner" aria-label="Carregando..." />}
       {playerStatus === 'error' && (
         <div className="player-error">
           Falha na reprodução do stream. Verifique se o conteúdo está ativo no provedor.

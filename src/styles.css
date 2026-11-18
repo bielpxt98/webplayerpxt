@@ -2577,30 +2577,314 @@ input:focus {
   }
 }
 
+/* Spinner minimalista e elegante (substitui o banner 'Carregando player...') */
+.cortex-mini-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px;
+  height: 46px;
+  border: 3px solid rgba(56, 189, 248, 0.2);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: cortexSpin 0.75s linear infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+
+@keyframes cortexSpin {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
 @media (max-width: 768px) {
-  .cortex-live-grid,
-  .cortex-vod-layout {
-    grid-template-columns: 1fr;
+  .app-shell {
+    padding: 12px 10px 110px;
+  }
+
+  .cortex-header {
+    margin-bottom: 12px;
+    padding: 0 4px;
+  }
+
+  .cortex-header h1 {
+    font-size: 1.3rem;
+  }
+
+  .cortex-logo-badge {
+    padding: 4px 10px;
+    font-size: 0.8rem;
+  }
+
+  /* TV AO VIVO MOBILE PORTRAIT: Player fixo no topo, categorias em chips deslizantes e canais embaixo */
+  .cortex-live-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     height: auto;
     min-height: 0;
   }
+
+  /* 1º: Player de Vídeo no Topo */
+  .cortex-col-preview {
+    order: 1;
+    position: sticky;
+    top: 6px;
+    z-index: 20;
+    border-radius: 16px;
+  }
+
+  .cortex-player-wrapper {
+    aspect-ratio: 16 / 9;
+    max-height: 40vh;
+  }
+
+  .cortex-preview-info {
+    padding: 10px 12px;
+  }
+
+  .cortex-preview-info h3 {
+    font-size: 0.95rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cortex-epg-box {
+    display: none;
+  }
+
+  /* 2º: Categorias como chips horizontais deslizantes */
+  .cortex-col-cats {
+    order: 2;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    overflow: visible;
+  }
+
+  .cortex-col-cats .cortex-search-box {
+    padding: 4px 0 8px;
+  }
+
+  .cortex-col-cats .cortex-cat-list {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    gap: 8px;
+    padding: 4px 2px 8px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .cortex-col-cats .cortex-cat-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .cortex-col-cats .cortex-cat-item {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(12, 26, 56, 0.85);
+    border: 1px solid rgba(134, 218, 255, 0.2);
+    font-size: 0.82rem;
+  }
+
+  .cortex-col-cats .cortex-cat-item .cortex-cat-badge {
+    display: none;
+  }
+
+  /* 3º: Lista de Canais */
+  .cortex-col-channels {
+    order: 3;
+    max-height: 48vh;
+    overflow-y: auto;
+    border-radius: 16px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .cortex-channel-row {
+    padding: 10px 12px;
+  }
+
+  .cortex-channel-title strong {
+    font-size: 0.88rem;
+  }
+
+  /* FILMES E SÉRIES MOBILE */
+  .cortex-vod-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: auto;
+    min-height: 0;
+  }
+
+  .cortex-vod-sidebar {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    overflow: visible;
+  }
+
+  .cortex-vod-sidebar .cortex-search-box {
+    padding: 4px 0 8px;
+  }
+
+  .cortex-vod-sidebar .cortex-cat-list {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    gap: 8px;
+    padding: 4px 2px 8px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .cortex-vod-sidebar .cortex-cat-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .cortex-vod-sidebar .cortex-cat-item {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(12, 26, 56, 0.85);
+    border: 1px solid rgba(134, 218, 255, 0.2);
+    font-size: 0.82rem;
+  }
+
+  .cortex-vod-sidebar .cortex-cat-item .cortex-cat-badge {
+    display: none;
+  }
+
   .cortex-poster-grid {
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
     gap: 12px;
     height: auto;
     max-height: none;
-    padding-bottom: 120px;
+    padding: 4px 2px 120px;
   }
+
+  .cortex-poster-card {
+    max-width: none;
+  }
+
   .cortex-detail-hero {
     grid-template-columns: 1fr;
     text-align: center;
+    gap: 16px;
   }
+
   .cortex-detail-poster {
-    max-width: 220px;
+    max-width: 180px;
     margin: 0 auto;
   }
+
+  .cortex-badges-row,
   .cortex-actions-row {
     justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .cortex-actions-row button {
+    flex: 1 1 140px;
+    justify-content: center;
+  }
+
+  .footer-actions {
+    bottom: 8px;
+    width: calc(100% - 16px);
+    max-width: 500px;
+    padding: 4px;
+    gap: 4px;
+    border-radius: 20px;
+  }
+
+  .footer-actions button {
+    flex: 1;
+    padding: 8px 2px;
+    font-size: 0.72rem;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .footer-actions button span {
+    font-size: 1.1rem;
+  }
+}
+
+/* MODO DEITADO / CINEMA LANDSCAPE NO CELULAR */
+@media (max-width: 950px) and (orientation: landscape), (max-height: 520px) and (orientation: landscape) {
+  .app-shell {
+    padding: 6px 12px 60px;
+  }
+
+  .cortex-header {
+    display: none;
+  }
+
+  .cortex-live-grid {
+    display: grid !important;
+    grid-template-columns: 220px 1fr !important;
+    gap: 12px;
+    height: calc(100vh - 65px) !important;
+  }
+
+  .cortex-col-cats {
+    display: none !important;
+  }
+
+  .cortex-col-channels {
+    order: 1 !important;
+    height: 100% !important;
+    max-height: 100% !important;
+  }
+
+  .cortex-col-preview {
+    order: 2 !important;
+    position: relative !important;
+    top: 0 !important;
+    height: 100% !important;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .cortex-player-wrapper {
+    flex: 1;
+    max-height: calc(100vh - 110px) !important;
+  }
+
+  .cortex-vod-layout {
+    display: grid !important;
+    grid-template-columns: 190px 1fr !important;
+    height: calc(100vh - 65px) !important;
+  }
+
+  .cortex-poster-grid {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)) !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    padding-bottom: 60px !important;
+  }
+
+  .footer-actions {
+    bottom: 4px;
+    padding: 2px;
+  }
+
+  .footer-actions button {
+    padding: 4px 6px;
+    font-size: 0.68rem;
+    flex-direction: row;
   }
 }
 

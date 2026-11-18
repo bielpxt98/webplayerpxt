@@ -977,12 +977,21 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   }
 
   function handleFullscreen() {
+    const playerWrapper = document.querySelector('.cortex-player-wrapper')
     const videoEl = document.querySelector('.cortex-player-wrapper video')
-    if (videoEl) {
-      if (videoEl.requestFullscreen) {
-        videoEl.requestFullscreen()
-      } else if (videoEl.webkitRequestFullscreen) {
-        videoEl.webkitRequestFullscreen()
+    const target = playerWrapper || videoEl
+    if (target) {
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {})
+      } else {
+        const req = target.requestFullscreen || target.webkitRequestFullscreen || target.msRequestFullscreen
+        if (req) {
+          req.call(target).then(() => {
+            if (window.screen?.orientation?.lock) {
+              window.screen.orientation.lock('landscape').catch(() => {})
+            }
+          }).catch(() => {})
+        }
       }
     }
   }
@@ -2099,6 +2108,11 @@ function App() {
         message: `${successMessage}. Catálogo carregado: ${counts.live || loadedCatalog.live.length} canais, ${counts.movies || loadedCatalog.movies.length} filmes e ${counts.series || loadedCatalog.series.length} séries.`,
       })
       setScreen('home')
+      if (typeof window !== 'undefined' && window.screen?.orientation?.lock) {
+        try {
+          window.screen.orientation.lock('landscape').catch(() => {})
+        } catch (_) {}
+      }
     } catch (error) {
       setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
     } finally {
