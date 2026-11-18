@@ -196,17 +196,31 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
 
       if (isLiveStream) {
         Object.assign(hlsConfig, {
-          liveSyncDurationCount: 2, // Mantém colado a apenas 2 segmentos do ao vivo real
-          liveMaxLatencyDurationCount: 4, // Não deixa atrasar mais de 4 segmentos
-          maxLiveSyncPlaybackRate: 1.15, // Recupera atrasos imperceptivelmente
-          liveDurationInfinity: true, // Mostra como transmissão AO VIVO contínua (infinito)
+          liveSyncDurationCount: 1, // Começa no último segmento emitido (colado no ao vivo real da TV)
+          liveMaxLatencyDurationCount: 2.5, // Nunca deixa ficar mais de 2.5 segmentos atrás
+          liveSyncDuration: 2.5, // Alvo de latência ultra baixa de ~2.5 segundos (igual app nativo)
+          liveMaxLatencyDuration: 5, // Latência máxima tolerada de 5 segundos
+          maxLiveSyncPlaybackRate: 1.25, // Acelera suavemente para zerar qualquer atraso
+          liveDurationInfinity: true, // Transmissão AO VIVO contínua
           lowLatencyMode: true,
-          backBufferLength: 30, // Mantém a memória leve e fluida
+          initialLiveManifestSize: 1, // Começa a tocar imediatamente no 1º segmento (abertura instantânea)
+          maxBufferLength: 6, // Buffer enxuto e colado na transmissão em tempo real
+          maxMaxBufferLength: 10,
+          backBufferLength: 15,
         })
       }
 
       const hls = new Hls(hlsConfig)
       hlsRef.current = hls
+
+      hls.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
+        if (isLiveStream && data?.details?.live && video) {
+          const liveEdge = data.details.edge || (data.details.totalduration - (data.details.targetduration || 4))
+          if (liveEdge > 0 && Math.abs(video.currentTime - liveEdge) > 8) {
+            video.currentTime = liveEdge
+          }
+        }
+      })
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         setPlayerStatus('ready')

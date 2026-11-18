@@ -1130,8 +1130,8 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
         </section>
 
         {/* Coluna 2: Lista de Canais */}
-        <section className="cortex-col cortex-col-channels" aria-label="Lista de canais">
-          <div className="cortex-channel-list">
+        <section className="cortex-col cortex-col-channels" aria-label="Lista de canais" style={{ minHeight: 0 }}>
+          <div className="cortex-channel-list cortex-channels-list">
             {displayedChannels.length === 0 ? (
               <p className="empty" style={{ padding: '24px', textAlign: 'center' }}>
                 {isLiveSearchActive ? 'Nenhum canal encontrado na busca.' : isFavoritesOnly ? 'Nenhum canal favoritado ainda.' : 'Nenhum canal nesta categoria.'}
