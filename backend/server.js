@@ -34,6 +34,22 @@ app.use((req, res, next) => {
   next();
 });
 
+const ORACLE_SERVER_URL = process.env.ORACLE_SERVER_URL || 'http://137.131.218.79';
+
+// Redirecionamento inteligente: Se a requisição chega no Render (domínio onrender.com ou RENDER),
+// encaminha o usuário de forma transparente para o servidor na Oracle Cloud em São Paulo (HTTP puro, sem mixed content)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/health') || req.path.startsWith('/api')) {
+    return next();
+  }
+  const host = String(req.headers.host || '');
+  if (process.env.RENDER || process.env.REDIRECT_TO_ORACLE === 'true' || host.includes('onrender.com')) {
+    const targetUrl = `${ORACLE_SERVER_URL.replace(/\/+$/, '')}${req.originalUrl || ''}`;
+    return res.redirect(302, targetUrl);
+  }
+  next();
+});
+
 // Configuração robusta de CORS
 app.use(cors({
   origin: true,
