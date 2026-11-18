@@ -462,6 +462,10 @@ function resolveFrontendDistPath() {
   return candidatePaths.find((p) => fs.existsSync(path.join(p, 'index.html'))) || null;
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`${SERVICE_NAME} listening on http://0.0.0.0:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`${SERVICE_NAME} listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+export default app;
