@@ -34,7 +34,8 @@ function getByKeys(source, keys, fallback = '') {
 }
 
 function indexCategories(categories = []) {
-  return categories.reduce((accumulator, category) => {
+  const list = Array.isArray(categories) ? categories : Object.values(categories || {})
+  return list.reduce((accumulator, category) => {
     const id = getByKeys(category, ['category_id', 'id'])
     const name = getByKeys(category, ['category_name', 'name'], MEDIA_TYPES.OTHERS)
     if (id) accumulator[id] = name
@@ -135,11 +136,26 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
     password: String(credentials.password || '').trim(),
   }
   const catalog = { ...createEmptyCatalog(), sourceUrl: normalizedCredentials.server, loadedAt: apiData?.fetchedAt || new Date().toISOString() }
+
+  // Se já for um catálogo previamente estruturado (do cache local), restaura diretamente
+  if (Array.isArray(apiData?.live) && !apiData?.liveStreams) {
+    catalog.live = apiData.live
+    catalog.movies = Array.isArray(apiData.movies) ? apiData.movies : []
+    catalog.series = Array.isArray(apiData.series) ? apiData.series : []
+    catalog.all = [...catalog.live, ...catalog.movies, ...catalog.series]
+    catalog.groups = apiData.groups || {}
+    return attachSearchIndexes(catalog)
+  }
+
   const liveCategoryMap = indexCategories(apiData?.liveCategories)
   const movieCategoryMap = indexCategories(apiData?.movieCategories)
   const seriesCategoryMap = indexCategories(apiData?.seriesCategories)
 
-  ;(apiData?.liveStreams || []).forEach((stream, index) => {
+  const liveList = Array.isArray(apiData?.liveStreams) ? apiData.liveStreams : Object.values(apiData?.liveStreams || {})
+  const vodList = Array.isArray(apiData?.vodStreams) ? apiData.vodStreams : Object.values(apiData?.vodStreams || {})
+  const seriesList = Array.isArray(apiData?.series) ? apiData.series : Object.values(apiData?.series || {})
+
+  liveList.forEach((stream, index) => {
     const streamId = getByKeys(stream, ['stream_id', 'id'])
     const liveUrls = createXtreamLiveUrls(normalizedCredentials, streamId)
     addCatalogItem(catalog, createXtreamItem({
@@ -152,7 +168,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
     }))
   })
 
-  ;(apiData?.vodStreams || []).forEach((stream, index) => {
+  vodList.forEach((stream, index) => {
     const streamId = getByKeys(stream, ['stream_id', 'id'])
     addCatalogItem(catalog, createXtreamItem({
       item: stream,
@@ -163,7 +179,7 @@ export function parseXtreamCatalog(apiData, credentials = {}) {
     }))
   })
 
-  ;(apiData?.series || []).forEach((series, index) => {
+  seriesList.forEach((series, index) => {
     addCatalogItem(catalog, createXtreamItem({
       item: series,
       index,

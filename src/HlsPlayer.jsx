@@ -214,11 +214,13 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
       hlsRef.current = hls
 
       hls.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
-        if (isLiveStream && data?.details?.live && video) {
-          const liveEdge = data.details.edge || (data.details.totalduration - (data.details.targetduration || 4))
-          if (liveEdge > 0 && Math.abs(video.currentTime - liveEdge) > 8) {
-            video.currentTime = liveEdge
-          }
+        if (isLiveStream && data?.details?.live && video && video.readyState >= 1) {
+          try {
+            const liveEdge = data.details.edge || (data.details.totalduration - (data.details.targetduration || 4))
+            if (Number.isFinite(liveEdge) && liveEdge > 0 && Math.abs(video.currentTime - liveEdge) > 8) {
+              video.currentTime = liveEdge
+            }
+          } catch (_) {}
         }
       })
 
@@ -233,8 +235,10 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
         }
 
         playVideo(video, onPlaybackUrlChange)
-        if (isLiveStream && typeof hls.liveSyncPosition === 'number' && hls.liveSyncPosition > 0) {
-          video.currentTime = hls.liveSyncPosition
+        if (isLiveStream && video && video.readyState >= 1 && typeof hls.liveSyncPosition === 'number' && hls.liveSyncPosition > 0) {
+          try {
+            video.currentTime = hls.liveSyncPosition
+          } catch (_) {}
         }
       })
 

@@ -909,6 +909,10 @@ async function resolvePlaybackUrl(originalUrl) {
 }
 
 function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sessionCredentials, onBack, onLogout }) {
+  const safeChannels = useMemo(() => Array.isArray(channels) ? channels : [], [channels])
+  const safeSearchIndex = useMemo(() => Array.isArray(searchIndex) ? searchIndex : [], [searchIndex])
+  const safeFavorites = useMemo(() => Array.isArray(favorites) ? favorites : [], [favorites])
+
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChannel, setSelectedChannel] = useState(null)
@@ -917,15 +921,19 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState('')
   const resolveRequestIdRef = useRef(0)
 
+  // Preserva 100% a ordem natural original da lista do servidor IPTV (os melhores canais e categorias no topo)
   const groups = useMemo(() => {
-    const groupMap = channels.reduce((accumulator, channel) => {
-      const groupName = channel.grupo || 'Sem categoria'
-      accumulator[groupName] = (accumulator[groupName] || 0) + 1
-      return accumulator
-    }, {})
-
-    return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
-  }, [channels])
+    const groupMap = new Map()
+    for (const channel of safeChannels) {
+      const groupName = channel?.grupo || 'Sem categoria'
+      if (!groupMap.has(groupName)) {
+        groupMap.set(groupName, 1)
+      } else {
+        groupMap.set(groupName, groupMap.get(groupName) + 1)
+      }
+    }
+    return Array.from(groupMap.entries()).map(([name, count]) => ({ name, count }))
+  }, [safeChannels])
 
   const activeGroup = isFavoritesOnly
     ? 'Favoritos'
@@ -933,8 +941,8 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
 
   const liveSearchFilter = useCallback(() => true, [])
   const { results: globalChannelResults, canSearch } = useCatalogSearch({
-    items: channels,
-    searchIndex,
+    items: safeChannels,
+    searchIndex: safeSearchIndex,
     searchTerm,
     filterItem: liveSearchFilter,
   })
@@ -944,12 +952,12 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
   const displayedChannels = useMemo(() => {
     if (isLiveSearchActive) return globalChannelResults
     if (isFavoritesOnly) {
-      return channels.filter((c) => Boolean(findFavorite(favorites, c)))
+      return safeChannels.filter((c) => Boolean(findFavorite(safeFavorites, c)))
     }
-    return activeGroup ? channels.filter((c) => c.grupo === activeGroup) : []
-  }, [isLiveSearchActive, globalChannelResults, isFavoritesOnly, channels, favorites, activeGroup])
+    return activeGroup ? safeChannels.filter((c) => c.grupo === activeGroup) : []
+  }, [isLiveSearchActive, globalChannelResults, isFavoritesOnly, safeChannels, safeFavorites, activeGroup])
 
-  const activeChannel = selectedChannel && channels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
+  const activeChannel = selectedChannel && safeChannels.some((channel) => createChannelKey(channel) === createChannelKey(selectedChannel))
     ? selectedChannel
     : (displayedChannels[0] || null)
 
@@ -1260,19 +1268,28 @@ function CatalogScreen({
   onPlayerBack,
   onLogout,
 }) {
+  const safeItems = useMemo(() => Array.isArray(items) ? items : [], [items])
+  const safeSearchIndex = useMemo(() => Array.isArray(searchIndex) ? searchIndex : [], [searchIndex])
+  const safeFavorites = useMemo(() => Array.isArray(favorites) ? favorites : [], [favorites])
+
   const [selectedGroup, setSelectedGroup] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [isFavoritesOnly, setIsFavoritesOnly] = useState(false)
   const playerPanelRef = useRef(null)
 
+  // Preserva 100% a ordem natural original da lista do servidor IPTV (os melhores títulos e categorias no topo)
   const groups = useMemo(() => {
-    const groupMap = items.reduce((accumulator, item) => {
-      const groupName = item.grupo || 'Sem categoria'
-      accumulator[groupName] = (accumulator[groupName] || 0) + 1
-      return accumulator
-    }, {})
-    return sortByName(Object.keys(groupMap)).map((name) => ({ name, count: groupMap[name] }))
-  }, [items])
+    const groupMap = new Map()
+    for (const item of safeItems) {
+      const groupName = item?.grupo || 'Sem categoria'
+      if (!groupMap.has(groupName)) {
+        groupMap.set(groupName, 1)
+      } else {
+        groupMap.set(groupName, groupMap.get(groupName) + 1)
+      }
+    }
+    return Array.from(groupMap.entries()).map(([name, count]) => ({ name, count }))
+  }, [safeItems])
 
   const activeGroup = isFavoritesOnly
     ? 'Favoritos'
@@ -1280,8 +1297,8 @@ function CatalogScreen({
 
   const catalogSearchFilter = useCallback(() => true, [])
   const { results: globalSearchItems, canSearch } = useCatalogSearch({
-    items,
-    searchIndex,
+    items: safeItems,
+    searchIndex: safeSearchIndex,
     searchTerm,
     filterItem: catalogSearchFilter,
   })
@@ -1291,10 +1308,10 @@ function CatalogScreen({
   const displayedItems = useMemo(() => {
     if (isCatalogSearchActive) return globalSearchItems
     if (isFavoritesOnly) {
-      return items.filter((item) => Boolean(findFavorite(favorites, item)))
+      return safeItems.filter((item) => Boolean(findFavorite(safeFavorites, item)))
     }
-    return activeGroup ? items.filter((item) => item.grupo === activeGroup) : []
-  }, [isCatalogSearchActive, globalSearchItems, isFavoritesOnly, items, favorites, activeGroup])
+    return activeGroup ? safeItems.filter((item) => item.grupo === activeGroup) : []
+  }, [isCatalogSearchActive, globalSearchItems, isFavoritesOnly, safeItems, safeFavorites, activeGroup])
 
   function selectCatalogItem(item) {
     onSelectItem(item)
@@ -2314,13 +2331,45 @@ function App() {
       ) : screen === 'home' ? (
         <HomeScreen loading={loading} onNavigate={navigateScreen} onLogout={handleLogout} username={sessionCredentials?.username} />
       ) : screen === 'live' ? (
-        <LiveTvScreen channels={mediaManager.live} searchIndex={mediaManager.searchIndex.live} favorites={favorites} onToggleFavorite={toggleFavoriteItem} sessionCredentials={sessionCredentials} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
+        <LiveTvScreen
+          channels={mediaManager.live || []}
+          searchIndex={mediaManager.searchIndex?.live || []}
+          favorites={favorites || []}
+          onToggleFavorite={toggleFavoriteItem}
+          sessionCredentials={sessionCredentials}
+          onBack={() => navigateScreen('home')}
+          onLogout={handleLogout}
+        />
       ) : screen === 'movies' ? (
-        <MoviesScreen sessionCredentials={sessionCredentials} items={mediaManager.movies} searchIndex={mediaManager.searchIndex.movies} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
+        <MoviesScreen
+          sessionCredentials={sessionCredentials}
+          items={mediaManager.movies || []}
+          searchIndex={mediaManager.searchIndex?.movies || []}
+          favorites={favorites || []}
+          onToggleFavorite={toggleFavoriteItem}
+          onBack={() => navigateScreen('home')}
+          onLogout={handleLogout}
+        />
       ) : screen === 'series' ? (
-        <SeriesScreen sessionCredentials={sessionCredentials} items={mediaManager.series} searchIndex={mediaManager.searchIndex.series} favorites={favorites} onToggleFavorite={toggleFavoriteItem} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
+        <SeriesScreen
+          sessionCredentials={sessionCredentials}
+          items={mediaManager.series || []}
+          searchIndex={mediaManager.searchIndex?.series || []}
+          favorites={favorites || []}
+          onToggleFavorite={toggleFavoriteItem}
+          onBack={() => navigateScreen('home')}
+          onLogout={handleLogout}
+        />
       ) : screen === 'favorites' ? (
-        <FavoritesScreen sessionCredentials={sessionCredentials} favorites={favorites} catalogItems={mediaManager.all} onToggleFavorite={toggleFavoriteItem} onOpenSeries={() => navigateScreen('series')} onBack={() => navigateScreen('home')} onLogout={handleLogout} />
+        <FavoritesScreen
+          sessionCredentials={sessionCredentials}
+          favorites={favorites || []}
+          catalogItems={mediaManager.all || []}
+          onToggleFavorite={toggleFavoriteItem}
+          onOpenSeries={() => navigateScreen('series')}
+          onBack={() => navigateScreen('home')}
+          onLogout={handleLogout}
+        />
       ) : (
         <PlaceholderScreen title={currentItem.title} subtitle={currentItem.subtitle} icon={currentItem.icon} mediaItems={currentMediaItems} total={currentMediaItems.length} />
       )}
@@ -2330,8 +2379,42 @@ function App() {
   )
 }
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('[PXT ERROR BOUNDARY]', error, errorInfo)
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="placeholder-wrap" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <section className="panel placeholder" style={{ maxWidth: '520px', padding: '36px 28px', textAlign: 'center' }}>
+            <div className="placeholder-icon">📺</div>
+            <h2>PXT PLAYER</h2>
+            <p style={{ margin: '14px 0 24px', color: '#94a3b8', lineHeight: 1.6 }}>
+              A tela precisou ser recarregada. Clique no botão abaixo para voltar aos canais.
+            </p>
+            <button className="primary-button" type="button" onClick={() => window.location.reload()}>
+              Recarregar Player
+            </button>
+          </section>
+        </main>
+      )
+    }
+    return this.props.children
+  }
+}
+
 createRoot(document.getElementById('root')).render(
-  <MediaManagerProvider>
-    <App />
-  </MediaManagerProvider>,
+  <ErrorBoundary>
+    <MediaManagerProvider>
+      <App />
+    </MediaManagerProvider>
+  </ErrorBoundary>,
 )
