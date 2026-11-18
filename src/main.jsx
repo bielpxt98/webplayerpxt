@@ -2,6 +2,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { createRoot } from 'react-dom/client'
 import HlsPlayer from './HlsPlayer.jsx'
 import { MediaManagerProvider, useMediaManager, parseM3UPlaylist } from './mediaManager.jsx'
+import { getCachedCatalog, setCachedCatalog } from './idbStorage.js'
 import './styles.css'
 
 const DEFAULT_SERVER = 'http://ttvp2.live'
@@ -176,11 +177,11 @@ function saveAccount(account) {
   localStorage.removeItem(STORAGE_KEY)
 }
 
-async function fetchDirectXtreamCatalog(account, initialData) {
+async function fetchDirectXtreamCatalog(account, initialData, onBackgroundUpdate = null) {
   const normServer = normalizeServer(account.server)
   const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
 
-  async function fetchAction(action) {
+  async function fetchAction(action, timeoutMs = 12000) {
     try {
       let targetUrl
       if (isHttps || BACKEND_BASE_URL) {
@@ -199,7 +200,7 @@ async function fetchDirectXtreamCatalog(account, initialData) {
       }
 
       const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 15000)
+      const t = setTimeout(() => ctrl.abort(), timeoutMs)
       const r = await fetch(targetUrl, {
         headers: { Accept: 'application/json, text/plain, */*' },
         signal: ctrl.signal,
@@ -215,25 +216,21 @@ async function fetchDirectXtreamCatalog(account, initialData) {
     return []
   }
 
-  // Busca em paralelo as categorias e canais
+  // ETAPA 1 (Ultra Rápida: < 1s): Busca categorias e canais de TV ao vivo primeiro
   const [
     liveCategories,
     movieCategories,
     seriesCategories,
     liveStreams,
-    vodStreams,
-    series,
   ] = await Promise.all([
-    fetchAction('get_live_categories'),
-    fetchAction('get_vod_categories'),
-    fetchAction('get_series_categories'),
-    fetchAction('get_live_streams'),
-    fetchAction('get_vod_streams'),
-    fetchAction('get_series'),
+    fetchAction('get_live_categories', 8000),
+    fetchAction('get_vod_categories', 8000),
+    fetchAction('get_series_categories', 8000),
+    fetchAction('get_live_streams', 10000),
   ])
 
   // Se liveStreams for vazio, tenta obter via M3U (get.php) como fallback inteligente
-  if (!liveStreams.length && !vodStreams.length && !series.length) {
+  if (!liveStreams.length) {
     try {
       const m3uUrl = new URL('/get.php', normServer)
       m3uUrl.searchParams.set('username', account.username)
@@ -286,20 +283,46 @@ async function fetchDirectXtreamCatalog(account, initialData) {
     }
   }
 
-  return {
+  const stage1Catalog = {
     liveCategories,
     movieCategories,
     seriesCategories,
     liveStreams,
-    vodStreams,
-    series,
+    vodStreams: [],
+    series: [],
     user_info: initialData?.user_info || {},
     server_info: initialData?.server_info || {},
     fetchedAt: new Date().toISOString(),
   }
+
+  // ETAPA 2 (Segundo plano): Baixa filmes e séries em background sem travar a interface
+  const bgFetchVodAndSeries = async () => {
+    try {
+      const [vodStreams, series] = await Promise.all([
+        fetchAction('get_vod_streams', 40000),
+        fetchAction('get_series', 40000),
+      ])
+      const completeCatalog = {
+        ...stage1Catalog,
+        vodStreams: vodStreams || [],
+        series: series || [],
+        fetchedAt: new Date().toISOString(),
+      }
+      if (typeof onBackgroundUpdate === 'function') {
+        onBackgroundUpdate(completeCatalog)
+      }
+    } catch (bgErr) {
+      console.warn('[XTREAM BACKGROUND] Falha ao sincronizar VOD/Séries:', bgErr.message)
+    }
+  }
+
+  // Dispara em background imediatamente
+  bgFetchVodAndSeries()
+
+  return stage1Catalog
 }
 
-async function validateXtreamAccount(account) {
+async function validateXtreamAccount(account, onBackgroundUpdate = null) {
   const normServer = normalizeServer(account.server)
   if (!normServer || !account.username?.trim() || !account.password?.trim()) {
     throw new Error('Preencha servidor, usuário e senha.')
@@ -339,7 +362,7 @@ async function validateXtreamAccount(account) {
     }
 
     // Carrega o catálogo através das rotas de proxy HTTPS
-    const catalog = await fetchDirectXtreamCatalog(account, data)
+    const catalog = await fetchDirectXtreamCatalog(account, data, onBackgroundUpdate)
 
     return {
       ok: true,
@@ -371,7 +394,7 @@ async function validateXtreamAccount(account) {
       const data = await directResponse.json()
       const userInfo = data?.user_info || {}
       if (userInfo.auth === 1 || userInfo.status === 'Active') {
-        const catalog = await fetchDirectXtreamCatalog(account, data)
+        const catalog = await fetchDirectXtreamCatalog(account, data, onBackgroundUpdate)
         return {
           ok: true,
           status: userInfo.status ?? null,
@@ -420,7 +443,7 @@ async function validateXtreamAccount(account) {
 
   const data = await response.json()
   const userInfo = data?.user_info || data || {}
-  const catalog = await fetchDirectXtreamCatalog(account, data)
+  const catalog = await fetchDirectXtreamCatalog(account, data, onBackgroundUpdate)
 
   return {
     ok: true,
@@ -980,18 +1003,37 @@ function LiveTvScreen({ channels, searchIndex, favorites, onToggleFavorite, sess
     const playerWrapper = document.querySelector('.cortex-player-wrapper')
     const videoEl = document.querySelector('.cortex-player-wrapper video')
     const target = playerWrapper || videoEl
-    if (target) {
-      if (document.fullscreenElement) {
-        document.exitFullscreen?.().catch(() => {})
-      } else {
-        const req = target.requestFullscreen || target.webkitRequestFullscreen || target.msRequestFullscreen
-        if (req) {
-          req.call(target).then(() => {
-            if (window.screen?.orientation?.lock) {
-              window.screen.orientation.lock('landscape').catch(() => {})
-            }
-          }).catch(() => {})
+    if (!target) return
+
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      if (document.exitFullscreen) document.exitFullscreen().catch(() => {})
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen()
+      try {
+        if (window.screen?.orientation?.unlock) window.screen.orientation.unlock()
+      } catch (_) {}
+    } else {
+      // 1. Trava rotação horizontal (landscape) SINCRONAMENTE no exato clique/toque do usuário
+      try {
+        if (window.screen?.orientation?.lock) {
+          window.screen.orientation.lock('landscape').catch(() => {})
         }
+      } catch (_) {}
+
+      // 2. iOS Safari: entra em tela cheia direto pelo elemento <video>
+      if (videoEl && typeof videoEl.webkitEnterFullscreen === 'function') {
+        videoEl.webkitEnterFullscreen()
+        return
+      }
+
+      // 3. Android / Desktop: dispara Fullscreen API
+      const req = target.requestFullscreen || target.webkitRequestFullscreen || target.mozRequestFullScreen || target.msRequestFullscreen
+      if (req) {
+        req.call(target).catch(() => {
+          if (videoEl && videoEl !== target) {
+            const vReq = videoEl.requestFullscreen || videoEl.webkitRequestFullscreen
+            vReq?.call(videoEl).catch(() => {})
+          }
+        })
       }
     }
   }
@@ -2069,11 +2111,27 @@ function App() {
     const restoredCredentials = { server: saved.server, username: saved.username, password: saved.password, remember: true }
     setSessionCredentials({ server: normalizeServer(saved.server), username: saved.username.trim(), password: saved.password })
     setAccount({ ...EMPTY_ACCOUNT, server: saved.server, username: saved.username, password: MASKED_PASSWORD, remember: true })
-    handleConnection('Sessão restaurada', restoredCredentials)
+
+    // Instantâneo (< 50ms): Carrega imediatamente do cache IndexedDB se já visitou antes
+    const cacheKey = `${normalizeServer(saved.server)}_${saved.username.trim()}`.toLowerCase()
+    getCachedCatalog(cacheKey).then((cachedCatalog) => {
+      if (cachedCatalog && (cachedCatalog.liveStreams?.length || cachedCatalog.live?.length)) {
+        mediaManager.loadXtreamCatalog(cachedCatalog, {
+          server: normalizeServer(saved.server),
+          username: saved.username,
+          password: saved.password,
+        })
+        setScreen('home')
+        // Revalida em segundo plano sem bloquear o usuário
+        handleConnection('Sessão restaurada', restoredCredentials, { isBackground: true })
+      } else {
+        handleConnection('Sessão restaurada', restoredCredentials, { isBackground: false })
+      }
+    })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function handleConnection(successMessage = 'Conectado com sucesso', credentialsOverride = null) {
+  async function handleConnection(successMessage = 'Conectado com sucesso', credentialsOverride = null, options = {}) {
     const formCredentials = credentialsOverride || getAccountCredentials(account)
     const authCredentials = isMaskedPassword(formCredentials.password)
       ? { ...formCredentials, password: sessionCredentials?.password || '' }
@@ -2084,11 +2142,26 @@ function App() {
       return
     }
 
-    setLoading(true)
-    setStatus({ type: '', message: '' })
+    const isBackground = Boolean(options?.isBackground)
+    if (!isBackground) {
+      setLoading(true)
+      setStatus({ type: '', message: '' })
+    }
+
+    const cacheKey = `${normalizeServer(authCredentials.server)}_${authCredentials.username.trim()}`.toLowerCase()
+
+    const onBackgroundCatalogReady = (fullCatalog) => {
+      const fullPayload = getCatalogPayload({ catalog: fullCatalog })
+      mediaManager.loadXtreamCatalog(fullPayload, {
+        server: normalizeServer(authCredentials.server),
+        username: authCredentials.username,
+        password: authCredentials.password,
+      })
+      setCachedCatalog(cacheKey, fullPayload)
+    }
 
     try {
-      const responseData = await validateXtreamAccount(authCredentials)
+      const responseData = await validateXtreamAccount(authCredentials, onBackgroundCatalogReady)
       const realPassword = authCredentials.password.trim()
       saveAccount({ ...authCredentials, password: realPassword })
       const catalogPayload = getCatalogPayload(responseData)
@@ -2097,6 +2170,10 @@ function App() {
         username: authCredentials.username,
         password: realPassword,
       })
+
+      // Salva estágio 1 no IndexedDB imediatamente
+      setCachedCatalog(cacheKey, catalogPayload)
+
       setSessionCredentials({
         server: normalizeServer(authCredentials.server),
         username: authCredentials.username.trim(),
@@ -2111,7 +2188,7 @@ function App() {
       const counts = getCatalogCounts(catalogPayload)
       setStatus({
         type: 'success',
-        message: `${successMessage}. Catálogo carregado: ${counts.live || loadedCatalog.live.length} canais, ${counts.movies || loadedCatalog.movies.length} filmes e ${counts.series || loadedCatalog.series.length} séries.`,
+        message: `${successMessage}. Catálogo pronto: ${counts.live || loadedCatalog.live.length} canais ao vivo.`,
       })
       setScreen('home')
       if (typeof window !== 'undefined' && window.screen?.orientation?.lock) {
@@ -2120,9 +2197,13 @@ function App() {
         } catch (_) {}
       }
     } catch (error) {
-      setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
+      if (!isBackground) {
+        setStatus({ type: 'error', message: `Erro ao conectar: ${error.message}` })
+      }
     } finally {
-      setLoading(false)
+      if (!isBackground) {
+        setLoading(false)
+      }
     }
   }
 

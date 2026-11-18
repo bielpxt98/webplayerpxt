@@ -2026,6 +2026,43 @@ input:focus {
   transform: scale(1.05);
 }
 
+/* Adaptação Perfeita de Tela Cheia (Desktop e Mobile) */
+:fullscreen,
+:-webkit-full-screen {
+  background-color: #000 !important;
+}
+
+.cortex-player-wrapper:fullscreen,
+.cortex-player-wrapper:-webkit-full-screen,
+.cortex-player-wrapper:-moz-full-screen,
+.cortex-player-wrapper:-ms-fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+  border: none !important;
+  background: #000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  z-index: 999999 !important;
+}
+
+.cortex-player-wrapper:fullscreen video,
+.cortex-player-wrapper:-webkit-full-screen video,
+:fullscreen video,
+:-webkit-full-screen video {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  object-fit: contain !important;
+  background: #000 !important;
+}
+
 .cortex-epg-box {
   background: rgba(0, 12, 32, 0.55);
   border: 1px solid rgba(134, 218, 255, 0.12);

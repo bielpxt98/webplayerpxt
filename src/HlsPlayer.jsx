@@ -183,6 +183,12 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
     if (shouldUseHls && hlsSupported) {
       const hlsConfig = {
         enableWorker: true,
+        autoStartLoad: true,
+        capLevelToPlayerSize: false,
+        abrEwmaDefaultEstimate: 3500000, // Começa em qualidade média rápida (~3.5 Mbps)
+        abrBandWidthFactor: 0.9,
+        abrBandWidthUpFactor: 0.7,
+        abrMaxWithRealBitrate: true,
         xhrSetup(xhr) {
           xhr.withCredentials = false
         },
@@ -202,9 +208,16 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
       const hls = new Hls(hlsConfig)
       hlsRef.current = hls
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         setPlayerStatus('ready')
         onPlaybackUrlChange?.({ manifestParsed: 'sim', loadedVideoUrl: video.currentSrc || video.src || '' })
+
+        // Se houver múltiplos níveis (ex: 480p, 720p, 1080p), começa no nível médio e sobe para o mais alto
+        if (data?.levels && data.levels.length > 1) {
+          const midIndex = Math.floor(data.levels.length / 2)
+          hls.startLevel = midIndex
+        }
+
         playVideo(video, onPlaybackUrlChange)
         if (isLiveStream && typeof hls.liveSyncPosition === 'number' && hls.liveSyncPosition > 0) {
           video.currentTime = hls.liveSyncPosition
@@ -277,6 +290,40 @@ export default function HlsPlayer({ url, fallbackUrl = '', contentType = '', tit
     video.addEventListener('error', handleError)
     return () => video.removeEventListener('error', handleError)
   }, [candidateIndex, candidates.length, onPlaybackUrlChange])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return undefined
+
+    const handleFullscreenChange = () => {
+      const isFs = document.fullscreenElement === video || document.fullscreenElement?.contains(video)
+      if (isFs) {
+        try {
+          if (window.screen?.orientation?.lock) {
+            window.screen.orientation.lock('landscape').catch(() => {})
+          }
+        } catch (_) {}
+      }
+    }
+
+    const handleWebkitBegin = () => {
+      try {
+        if (window.screen?.orientation?.lock) {
+          window.screen.orientation.lock('landscape').catch(() => {})
+        }
+      } catch (_) {}
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange)
+    video.addEventListener('webkitbeginfullscreen', handleWebkitBegin)
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange)
+      video.removeEventListener('webkitbeginfullscreen', handleWebkitBegin)
+    }
+  }, [])
 
   return (
     <div className="hls-player" aria-live="polite">
