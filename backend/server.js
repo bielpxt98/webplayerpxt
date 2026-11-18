@@ -22,8 +22,14 @@ const CLEAN_OUTBOUND_HEADERS = {
 };
 
 // Desativa HSTS para aceitar tanto HTTP quanto HTTPS de forma transparente
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=0');
+  const matched = req.headers['x-matched-path'] || req.headers['x-vercel-matched-path'];
+  if (matched && typeof matched === 'string') {
+    req.url = matched;
+  } else if (req.url.startsWith('/server.js')) {
+    req.url = req.url.replace(/^\/server\.js/, '') || '/';
+  }
   next();
 });
 
